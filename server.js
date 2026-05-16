@@ -7,22 +7,19 @@ const app = express();
 app.use(express.json({ limit: "20mb" }));
 
 app.post("/generate-pdf", async (req, res) => {
-
   try {
 
     console.log(req.body);
 
-    const html = req.body.html;
+    const html = req.body?.html;
 
-    // CHECK HTML
     if (!html) {
       return res.status(400).json({
         success: false,
-        error: "Missing html"
+        error: "Missing html in request body"
       });
     }
 
-    // START BROWSER
     const browser = await puppeteer.launch({
       headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox"]
@@ -30,12 +27,10 @@ app.post("/generate-pdf", async (req, res) => {
 
     const page = await browser.newPage();
 
-    // LOAD HTML
     await page.setContent(html, {
       waitUntil: "networkidle0"
     });
 
-    // GENERATE PDF
     const pdf = await page.pdf({
       format: "A4",
       printBackground: true
@@ -43,8 +38,8 @@ app.post("/generate-pdf", async (req, res) => {
 
     await browser.close();
 
-    // SEND PDF
     res.setHeader("Content-Type", "application/pdf");
+
     res.setHeader(
       "Content-Disposition",
       "attachment; filename=output.pdf"
@@ -62,7 +57,6 @@ app.post("/generate-pdf", async (req, res) => {
     });
 
   }
-
 });
 
 // PORT
