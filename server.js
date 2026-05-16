@@ -1,9 +1,9 @@
 const express = require("express");
-const puppeteer = require("puppeteer");
+const puppeteer = require("puppeteer-core");
+const chromium = require("@sparticuz/chromium");
 
 const app = express();
 
-// IMPORTANT: allow large HTML input
 app.use(express.json({ limit: "20mb" }));
 
 app.post("/generate-pdf", async (req, res) => {
@@ -15,12 +15,14 @@ app.post("/generate-pdf", async (req, res) => {
     if (!html) {
       return res.status(400).json({
         success: false,
-        error: "Missing 'html' in request body"
+        error: "Missing html in request body"
       });
     }
 
     browser = await puppeteer.launch({
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+      args: chromium.args,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless
     });
 
     const page = await browser.newPage();
@@ -36,7 +38,6 @@ app.post("/generate-pdf", async (req, res) => {
 
     await browser.close();
 
-    // 🔥 FIX: convert PDF to base64 (works in workflows)
     const pdfBase64 = pdfBuffer.toString("base64");
 
     return res.json({
@@ -54,14 +55,12 @@ app.post("/generate-pdf", async (req, res) => {
   }
 });
 
-// Health check route (IMPORTANT for Render)
+// health check (Render needs this)
 app.get("/", (req, res) => {
-  res.send("PDF API is running 🚀");
+  res.send("PDF API running 🚀");
 });
 
-// Use Render port (VERY IMPORTANT)
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, () => {
-  console.log(`PDF API running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
