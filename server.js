@@ -21,7 +21,8 @@ app.post("/generate-pdf", async (req, res) => {
     }
 
     const browser = await puppeteer.launch({
-      headless: "new",
+      headless: true,
+       executablePath: puppeteer.executablePath(),
       args: ["--no-sandbox", "--disable-setuid-sandbox"]
     });
 
