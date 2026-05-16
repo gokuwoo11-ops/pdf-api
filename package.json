@@ -13,6 +13,17 @@
   "dependencies": {
     "@sparticuz/chromium": "^148.0.0",
     "express": "^5.2.1",
-    "puppeteer-core": "^latest"
-  }
+    "puppeteer": "^25.0.2"
+  },
+  "engines": {
+    "node": ">=20.0.0 <22.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gokuwoo11-ops/pdf-api.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gokuwoo11-ops/pdf-api/issues"
+  },
+  "homepage": "https://github.com/gokuwoo11-ops/pdf-api#readme"
 }
