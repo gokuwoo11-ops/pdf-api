@@ -10,7 +10,6 @@ const app = express();
 app.use(express.json({ limit: "50mb" }));
 app.use(express.text({ type: "*/*", limit: "50mb" }));
 
-// JSON parse error handler
 app.use((err, req, res, next) => {
   if (err.type === "entity.parse.failed") {
     return res.status(400).json({
@@ -28,114 +27,97 @@ app.get("/", (req, res) => {
   res.send("PDF API is running");
 });
 
-// ── Fetch image from Pexels and return as base64 ──────────────────────────────
+// ── Fetch one image from Pexels and return as base64 ─────────────────────────
 async function fetchImageAsBase64(searchQuery) {
   try {
     const apiKey = process.env.PEXELS_API_KEY;
     if (!apiKey) {
-      console.log("No Pexels API key found");
+      console.log("No PEXELS_API_KEY set");
       return null;
     }
 
-    // Search Pexels for the query
-    const searchResponse = await axios.get(
-      "https://api.pexels.com/v1/search",
-      {
-        headers: { Authorization: apiKey },
-        params: {
-          query: searchQuery,
-          per_page: 1,
-          orientation: "landscape"
-        },
-        timeout: 8000
-      }
-    );
+    const searchRes = await axios.get("https://api.pexels.com/v1/search", {
+      headers: { Authorization: apiKey },
+      params: { query: searchQuery, per_page: 1, orientation: "landscape" },
+      timeout: 8000
+    });
 
-    const photos = searchResponse.data.photos;
+    const photos = searchRes.data.photos;
     if (!photos || photos.length === 0) {
-      console.log("No photos found for:", searchQuery);
+      console.log("No photo found for:", searchQuery);
       return null;
     }
 
-    // Get the medium-sized image URL
     const imageUrl = photos[0].src.large;
-    console.log("Fetching image for:", searchQuery, "→", imageUrl);
+    console.log("Downloading:", searchQuery, "→", imageUrl);
 
-    // Download the image
-    const imageResponse = await axios.get(imageUrl, {
+    const imgRes = await axios.get(imageUrl, {
       responseType: "arraybuffer",
       timeout: 10000
     });
 
-    // Convert to base64
-    const base64 = Buffer.from(imageResponse.data).toString("base64");
-    const mimeType = imageResponse.headers["content-type"] || "image/jpeg";
+    const base64 = Buffer.from(imgRes.data).toString("base64");
+    const mime = imgRes.headers["content-type"] || "image/jpeg";
+    return `data:${mime};base64,${base64}`;
 
-    return `data:${mimeType};base64,${base64}`;
-
-  } catch (error) {
-    console.log("Image fetch failed for:", searchQuery, "→", error.message);
+  } catch (err) {
+    console.log("Image fetch failed:", searchQuery, "→", err.message);
     return null;
   }
 }
 
-// ── Replace all data-search images in HTML with real base64 images ────────────
-async function embedRealImages(html) {
-  // Find all <img> tags that have a data-search attribute
-  const imgRegex = /<img[^>]*data-search="([^"]*)"[^>]*>/gi;
-  const matches = [...html.matchAll(imgRegex)];
+// ── Find all [IMG:keywords] in HTML and replace with real images ──────────────
+async function embedImages(html) {
+  // Find every [IMG:something] pattern
+  const pattern = /\[IMG:([^\]]+)\]/g;
+  const matches = [...html.matchAll(pattern)];
 
   if (matches.length === 0) {
-    console.log("No data-search images found in HTML");
+    console.log("No [IMG:...] placeholders found in HTML");
     return html;
   }
 
-  console.log(`Found ${matches.length} images to fetch`);
+  console.log(`Found ${matches.length} image placeholders`);
 
   // Fetch all images at the same time (parallel = fast)
-  const fetchPromises = matches.map(async (match) => {
-    const fullTag = match[0];
-    const searchQuery = match[1];
-    const base64Src = await fetchImageAsBase64(searchQuery);
-    return { fullTag, searchQuery, base64Src };
+  const fetches = matches.map(async (match) => {
+    const fullMatch = match[0];       // e.g. [IMG:badminton player smashing]
+    const keywords = match[1].trim(); // e.g. badminton player smashing
+    const base64 = await fetchImageAsBase64(keywords);
+    return { fullMatch, keywords, base64 };
   });
 
-  const results = await Promise.all(fetchPromises);
+  const results = await Promise.all(fetches);
 
-  // Replace each tag in the HTML
+  // Replace each placeholder in the HTML
   let updatedHtml = html;
-
-  for (const { fullTag, searchQuery, base64Src } of results) {
-    if (base64Src) {
-      // Build a new img tag with the real image
-      const newTag = fullTag.replace(
-        /src="[^"]*"/,
-        `src="${base64Src}"`
-      ).replace(
-        /data-search="[^"]*"/,
-        `alt="${searchQuery}"`
-      );
-      updatedHtml = updatedHtml.replace(fullTag, newTag);
-      console.log("✓ Image embedded:", searchQuery);
+  for (const { fullMatch, keywords, base64 } of results) {
+    if (base64) {
+      // Replace with a real embedded image
+      const imgTag = `
+        <img 
+          src="${base64}" 
+          alt="${keywords}"
+          style="width:100%;height:220px;object-fit:cover;
+                 border-radius:12px;margin:16px 0;display:block;"
+        />`;
+      updatedHtml = updatedHtml.split(fullMatch).join(imgTag);
+      console.log("✓ Image embedded:", keywords);
     } else {
-      // Fallback — replace with a gradient banner if image failed
-      const fallbackDiv = `
+      // Fallback gradient if Pexels fails
+      const gradient = `
         <div style="
-          width:100%;
-          height:220px;
+          width:100%;height:220px;
           background:linear-gradient(135deg,#1a73e8,#0d47a1);
-          border-radius:12px;
-          display:flex;
-          align-items:center;
-          justify-content:center;
-          margin:16px 0;
+          border-radius:12px;margin:16px 0;
+          display:flex;align-items:center;justify-content:center;
         ">
-          <span style="color:white;font-size:20px;font-weight:bold;">
-            ${searchQuery}
+          <span style="color:white;font-size:18px;font-weight:bold;">
+            ${keywords}
           </span>
         </div>`;
-      updatedHtml = updatedHtml.replace(fullTag, fallbackDiv);
-      console.log("✗ Used fallback gradient for:", searchQuery);
+      updatedHtml = updatedHtml.split(fullMatch).join(gradient);
+      console.log("✗ Used gradient fallback:", keywords);
     }
   }
 
@@ -148,7 +130,9 @@ app.post("/generate-pdf", async (req, res) => {
 
   try {
     console.log("=== REQUEST ARRIVED ===");
+    console.log("Content-Type:", req.headers["content-type"]);
 
+    // ── Extract HTML ──────────────────────────────────────────────────────────
     let html;
 
     if (typeof req.body === "string") {
@@ -162,6 +146,7 @@ app.post("/generate-pdf", async (req, res) => {
       html = req.body.html || req.body.answer || req.body.source;
     }
 
+    // Unwrap double-stringified HTML from Relevance AI JS step
     if (typeof html === "string" && html.startsWith('"') && html.endsWith('"')) {
       try { html = JSON.parse(html); } catch {}
     }
@@ -179,14 +164,14 @@ app.post("/generate-pdf", async (req, res) => {
       });
     }
 
-    console.log("HTML received — length:", html.length);
+    console.log("HTML length:", html.length, "chars");
 
-    // ── Fetch and embed real images BEFORE generating PDF ─────────────────────
-    console.log("Fetching images...");
-    html = await embedRealImages(html);
-    console.log("Images embedded. Launching Puppeteer...");
+    // ── Replace [IMG:...] placeholders with real Pexels images ───────────────
+    console.log("Fetching images from Pexels...");
+    html = await embedImages(html);
+    console.log("Images done. Starting Puppeteer...");
 
-    // ── Launch Puppeteer ──────────────────────────────────────────────────────
+    // ── Generate PDF ──────────────────────────────────────────────────────────
     browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
@@ -198,7 +183,6 @@ app.post("/generate-pdf", async (req, res) => {
     page.setDefaultTimeout(30000);
     page.setDefaultNavigationTimeout(30000);
 
-    // Images are now base64 — no network needed — use domcontentloaded
     await page.setContent(html, {
       waitUntil: "domcontentloaded",
       timeout: 30000
@@ -213,6 +197,7 @@ app.post("/generate-pdf", async (req, res) => {
     await browser.close();
     browser = null;
 
+    // ── Save and return URL ───────────────────────────────────────────────────
     const publicDir = path.join(__dirname, "public");
     fs.mkdirSync(publicDir, { recursive: true });
 
