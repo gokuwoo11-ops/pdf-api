@@ -1,66 +1,73 @@
 const express = require("express");
-const puppeteer = require("puppeteer-core");
-const chromium = require("@sparticuz/chromium");
+const puppeteer = require("puppeteer");
 
 const app = express();
 
+// IMPORTANT
 app.use(express.json({ limit: "20mb" }));
 
 app.post("/generate-pdf", async (req, res) => {
-  let browser;
 
   try {
-    const { html } = req.body;
 
+    console.log(req.body);
+
+    const html = req.body.html;
+
+    // CHECK HTML
     if (!html) {
       return res.status(400).json({
         success: false,
-        error: "Missing html in request body"
+        error: "Missing html"
       });
     }
 
-    browser = await puppeteer.launch({
-      args: chromium.args,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless
+    // START BROWSER
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"]
     });
 
     const page = await browser.newPage();
 
+    // LOAD HTML
     await page.setContent(html, {
       waitUntil: "networkidle0"
     });
 
-    const pdfBuffer = await page.pdf({
+    // GENERATE PDF
+    const pdf = await page.pdf({
       format: "A4",
       printBackground: true
     });
 
     await browser.close();
 
-    const pdfBase64 = pdfBuffer.toString("base64");
+    // SEND PDF
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=output.pdf"
+    );
 
-    return res.json({
-      success: true,
-      pdf: pdfBase64
-    });
+    res.end(pdf);
 
   } catch (err) {
-    if (browser) await browser.close();
 
-    return res.status(500).json({
+    console.log(err);
+
+    res.status(500).json({
       success: false,
       error: err.toString()
     });
+
   }
+
 });
 
-// health check (Render needs this)
-app.get("/", (req, res) => {
-  res.send("PDF API running 🚀");
-});
-
+// PORT
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`PDF API running on port ${PORT}`);
 });
