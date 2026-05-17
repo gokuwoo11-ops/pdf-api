@@ -240,8 +240,8 @@ app.post("/generate-pdf", async (req, res) => {
     page.setDefaultNavigationTimeout(30000);
 
     await page.setContent(html, {
-      waitUntil: "domcontentloaded",
-      timeout: 30000
+      waitUntil:  "networkidle2",
+      timeout: 2000
     });
 
     const pdf = await page.pdf({
