@@ -19,104 +19,103 @@ app.use((err, req, res, next) => {
 
 app.use("/files", express.static(path.join(__dirname, "public")));
 
-// ── Health check ──────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.send("PDF API is running");
+  res.send("PDF API v5 running");
 });
 
-// ── TEST ENDPOINT — visit this to verify Pexels works ────────────────────────
-// Open this in browser: https://YOUR-RENDER-URL.onrender.com/test-pexels
 app.get("/test-pexels", async (req, res) => {
   const apiKey = process.env.PEXELS_API_KEY;
-
   if (!apiKey) {
-    return res.json({
-      success: false,
-      error: "PEXELS_API_KEY environment variable is NOT set in Render",
-      fix: "Go to Render dashboard → your service → Environment → add PEXELS_API_KEY"
-    });
+    return res.json({ success: false, error: "PEXELS_API_KEY not set in Render environment" });
   }
-
   try {
     const response = await axios.get("https://api.pexels.com/v1/search", {
       headers: { Authorization: apiKey },
       params: { query: "nature", per_page: 1 },
       timeout: 8000
     });
-
     const photo = response.data.photos[0];
-    return res.json({
-      success: true,
-      message: "Pexels API is working correctly",
-      sample_image_url: photo.src.large,
-      photographer: photo.photographer
-    });
-
+    return res.json({ success: true, message: "Pexels working", sample: photo.src.large });
   } catch (err) {
-    return res.json({
-      success: false,
-      error: "Pexels API call failed",
-      detail: err.message,
-      api_key_first_5: apiKey.substring(0, 5) + "..."
-    });
+    return res.json({ success: false, error: err.message });
   }
 });
 
-// ── Fetch image from Pexels → return as base64 ───────────────────────────────
-async function fetchImageAsBase64(searchQuery) {
-  const apiKey = process.env.PEXELS_API_KEY;
-
-  if (!apiKey) {
-    console.log("❌ PEXELS_API_KEY not set — set it in Render environment variables");
-    return null;
+// ── Clean up LLM HTML artifacts before rendering ─────────────────────────────
+function cleanHtml(html) {
+  // Cut off anything after </html>
+  const htmlClose = html.lastIndexOf("</html>");
+  if (htmlClose !== -1) {
+    html = html.substring(0, htmlClose + 7);
   }
 
-  try {
-    console.log(`🔍 Searching Pexels for: "${searchQuery}"`);
+  // Remove raw calculation/math text that appears between divs
+  html = html.replace(/(<\/div>)\s*([^<]{50,}?)\s*(<div)/g, (match, close, text, open) => {
+    if (/[\d\.\=\×\→×÷]/.test(text) || /formula|rounded|height|value|calc/i.test(text)) {
+      return close + open;
+    }
+    return match;
+  });
 
+  // Remove duplicate consecutive page breaks
+  html = html.replace(/(<div class="pb"><\/div>\s*){2,}/g, '<div class="pb"></div>');
+
+  // Remove page break right before </body>
+  html = html.replace(/<div class="pb"><\/div>\s*<\/body>/gi, "</body>");
+
+  // Remove page break right after <body>
+  html = html.replace(/(<body[^>]*>)\s*<div class="pb"><\/div>/gi, "$1");
+
+  console.log(`🧹 HTML cleaned: ${html.length} chars`);
+  return html;
+}
+
+// ── Fetch image from Pexels → base64 ─────────────────────────────────────────
+async function fetchImageAsBase64(searchQuery) {
+  const apiKey = process.env.PEXELS_API_KEY;
+  if (!apiKey) {
+    console.log("❌ PEXELS_API_KEY not set");
+    return null;
+  }
+  try {
+    console.log(`🔍 Searching Pexels: "${searchQuery}"`);
     const searchRes = await axios.get("https://api.pexels.com/v1/search", {
       headers: { Authorization: apiKey },
       params: { query: searchQuery, per_page: 1, orientation: "landscape" },
       timeout: 8000
     });
-
     const photos = searchRes.data.photos;
     if (!photos || photos.length === 0) {
-      console.log(`⚠️ No photos found for: "${searchQuery}"`);
+      console.log(`⚠️ No photos found: "${searchQuery}"`);
       return null;
     }
-
     const imageUrl = photos[0].src.large;
-    console.log(`📥 Downloading image for: "${searchQuery}"`);
-
+    console.log(`📥 Downloading: "${searchQuery}"`);
     const imgRes = await axios.get(imageUrl, {
       responseType: "arraybuffer",
       timeout: 12000
     });
-
     const base64 = Buffer.from(imgRes.data).toString("base64");
     const mime = imgRes.headers["content-type"] || "image/jpeg";
-
-    console.log(`✅ Image ready for: "${searchQuery}"`);
+    console.log(`✅ Image ready: "${searchQuery}"`);
     return `data:${mime};base64,${base64}`;
-
   } catch (err) {
-    console.log(`❌ Pexels failed for "${searchQuery}": ${err.message}`);
+    console.log(`❌ Pexels failed "${searchQuery}": ${err.message}`);
     return null;
   }
 }
 
-// ── Find [IMG:keywords] and replace with real photos ─────────────────────────
+// ── Replace [IMG:keywords] with real Pexels photos ───────────────────────────
 async function embedImages(html) {
   const pattern = /\[IMG:([^\]]+)\]/g;
   const matches = [...html.matchAll(pattern)];
 
   if (matches.length === 0) {
-    console.log("⚠️ No [IMG:...] placeholders found in HTML");
+    console.log("⚠️ No [IMG:] placeholders found");
     return html;
   }
 
-  console.log(`🖼️ Found ${matches.length} image placeholders — fetching all in parallel`);
+  console.log(`🖼️ Found ${matches.length} image placeholders — fetching in parallel`);
 
   const fetches = matches.map(async (match) => {
     const fullMatch = match[0];
@@ -131,46 +130,31 @@ async function embedImages(html) {
   let successCount = 0;
   let failCount = 0;
 
+  const fallbackColors = [
+    ["#1A0A0A", "#C62828"],
+    ["#0A1628", "#0D47A1"],
+    ["#0D0020", "#4A00E0"],
+    ["#0A1A0A", "#1B5E20"],
+    ["#1A0800", "#BF360C"],
+    ["#001A16", "#00695C"]
+  ];
+
   for (const { fullMatch, keywords, base64 } of results) {
     if (base64) {
-      const imgTag = `
-        <img
-          src="${base64}"
-          alt="${keywords}"
-          style="
-            width: 100%;
-            height: 220px;
-            object-fit: cover;
-            border-radius: 12px;
-            margin: 16px 0;
-            display: block;
-          "
-        />`;
+      // Replaced as a plain <img> — CSS in the HTML template handles sizing
+      const imgTag = `<img src="${base64}" alt="${keywords}" />`;
       updatedHtml = updatedHtml.split(fullMatch).join(imgTag);
       successCount++;
     } else {
-      // Gradient fallback if Pexels fails
-      const colors = [
-        ["#1a73e8", "#0d47a1"],
-        ["#2e7d32", "#1b5e20"],
-        ["#e65100", "#bf360c"],
-        ["#6a1b9a", "#4a148c"],
-        ["#00695c", "#004d40"],
-        ["#c62828", "#b71c1c"]
-      ];
-      const [c1, c2] = colors[failCount % colors.length];
+      const [bg, accent] = fallbackColors[failCount % fallbackColors.length];
       const gradient = `
         <div style="
-          width: 100%;
-          height: 220px;
-          background: linear-gradient(135deg, ${c1}, ${c2});
-          border-radius: 12px;
-          margin: 16px 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          width:100%; height:320px;
+          background:linear-gradient(135deg, ${bg}, ${accent});
+          display:flex; align-items:center; justify-content:center;
+          flex-shrink:0;
         ">
-          <span style="color:white; font-size:16px; font-weight:bold; padding:20px; text-align:center;">
+          <span style="color:rgba(255,255,255,0.4); font-size:14px; font-family:sans-serif;">
             ${keywords}
           </span>
         </div>`;
@@ -179,7 +163,7 @@ async function embedImages(html) {
     }
   }
 
-  console.log(`✅ Images done: ${successCount} real photos, ${failCount} gradients`);
+  console.log(`✅ Images done: ${successCount} real, ${failCount} gradients`);
   return updatedHtml;
 }
 
@@ -221,37 +205,42 @@ app.post("/generate-pdf", async (req, res) => {
       });
     }
 
-    console.log(`📄 HTML received: ${html.length} characters`);
+    console.log(`📄 HTML received: ${html.length} chars`);
 
-    // Fetch and embed real images
+    // Step 1 — clean LLM artifacts
+    html = cleanHtml(html);
+
+    // Step 2 — embed real images
     html = await embedImages(html);
 
     console.log("🚀 Launching Puppeteer...");
-browser = await puppeteer.launch({
-  args: [
-    ...chromium.args,
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--font-render-hinting=none",
-    "--disable-font-subpixel-positioning"
-  ],
-  defaultViewport: chromium.defaultViewport,
-  executablePath: await chromium.executablePath(),
-  headless: chromium.headless
-});
+
+    browser = await puppeteer.launch({
+      args: [
+        ...chromium.args,
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--font-render-hinting=none",
+        "--disable-font-subpixel-positioning"
+      ],
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless
+    });
+
     const page = await browser.newPage();
-    page.setDefaultTimeout(30000);
-    page.setDefaultNavigationTimeout(30000);
+    page.setDefaultTimeout(45000);
+    page.setDefaultNavigationTimeout(45000);
 
     await page.setContent(html, {
-      waitUntil:  "networkidle2",
-      timeout: 3000
+      waitUntil: "networkidle2",
+      timeout: 45000
     });
 
     const pdf = await page.pdf({
       format: "A4",
       printBackground: true,
-      margin: { top: "20px", bottom: "20px", left: "20px", right: "20px" }
+      margin: { top: "0", bottom: "0", left: "0", right: "0" }
     });
 
     await browser.close();
@@ -279,5 +268,5 @@ browser = await puppeteer.launch({
 });
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log("✅ Server running on port", process.env.PORT || 3000);
+  console.log("✅ Server v5 running on port", process.env.PORT || 3000);
 });
