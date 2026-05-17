@@ -227,21 +227,25 @@ app.post("/generate-pdf", async (req, res) => {
     html = await embedImages(html);
 
     console.log("🚀 Launching Puppeteer...");
-
-    browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless
-    });
-
+browser = await puppeteer.launch({
+  args: [
+    ...chromium.args,
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--font-render-hinting=none",
+    "--disable-font-subpixel-positioning"
+  ],
+  defaultViewport: chromium.defaultViewport,
+  executablePath: await chromium.executablePath(),
+  headless: chromium.headless
+});
     const page = await browser.newPage();
     page.setDefaultTimeout(30000);
     page.setDefaultNavigationTimeout(30000);
 
     await page.setContent(html, {
       waitUntil:  "networkidle2",
-      timeout: 2000
+      timeout: 3000
     });
 
     const pdf = await page.pdf({
