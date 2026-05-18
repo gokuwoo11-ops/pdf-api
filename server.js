@@ -198,7 +198,70 @@ app.post("/generate-pdf", async (req, res) => {
     return res.status(500).json({ success: false, error: e.message });
   }
 });
+// ─────────────────────────────────────────────
+// GEMINI CONNECTION TEST
+// Open /gemini-test in browser to verify API works
+// ─────────────────────────────────────────────
+app.get("/gemini-test", async (req, res) => {
+  try {
+    const apiKey = process.env.GEMINI_API_KEY;
 
+    if (!apiKey) {
+      return res.status(500).json({
+        success: false,
+        error: "GEMINI_API_KEY is missing in Render environment variables"
+      });
+    }
+
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: "Reply with exactly this text only: GEMINI CONNECTED"
+                }
+              ]
+            }
+          ]
+        })
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        success: false,
+        error: "Gemini API request failed",
+        details: data
+      });
+    }
+
+    const text =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text || "No text returned";
+
+    res.json({
+      success: true,
+      message: text
+    });
+
+  } catch (error) {
+    console.error("GEMINI TEST ERROR:", error);
+
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 app.listen(process.env.PORT || 3000, () => {
   console.log("✅ Server v6 on port", process.env.PORT || 3000);
 });
