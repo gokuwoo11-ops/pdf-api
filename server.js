@@ -262,6 +262,113 @@ app.get("/gemini-test", async (req, res) => {
     });
   }
 });
+// ─────────────────────────────────────────────
+// GENERATE RESEARCH BRIEF FROM RAW NOTES
+// ─────────────────────────────────────────────
+app.post("/generate-brief", async (req, res) => {
+  try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    const { raw_notes } = req.body;
+
+    if (!apiKey) {
+      return res.status(500).json({
+        success: false,
+        error: "GEMINI_API_KEY is missing"
+      });
+    }
+
+    if (!raw_notes || typeof raw_notes !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "Missing raw_notes. Send JSON like: { raw_notes: 'your topic here' }"
+      });
+    }
+
+    const prompt = `
+You are a professional research strategist and document planner.
+
+Transform the user's rough notes into a rich, structured research brief that can later be converted into a premium PDF report.
+
+The brief must include:
+
+1. TOPIC
+2. CATEGORY — choose exactly one:
+   SPORTS, CORPORATE, TECH, HEALTH, ACADEMIC, STARTUP, ECO
+3. TAGLINE
+4. AUDIENCE
+5. 7 strong main sections
+6. For each section:
+   - SECTION NAME
+   - HEADING
+   - SUMMARY with 4 concise sentences
+   - 4 cards, each with:
+     - CARD TITLE
+     - CARD DETAIL with 3 concise sentences
+   - 5 to 6 bullets where useful
+7. 3 meaningful stats if the topic supports them
+8. CHART DATA with 5 labeled values if relevant
+9. COMPARISON TABLE with 5 rows if relevant
+10. CONCLUSION HEADING
+11. CONCLUSION SUMMARY with 4 sentences
+12. 4 TAKEAWAYS
+13. FINAL RECOMMENDATION with 3 sentences
+
+Rules:
+- Be specific and well-structured.
+- Do not write HTML.
+- Do not use markdown tables.
+- Use clear labels so another AI can convert this into HTML later.
+- Keep it rich enough to support a long premium PDF.
+
+User notes:
+${raw_notes}
+`;
+
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [{ text: prompt }]
+            }
+          ]
+        })
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        success: false,
+        error: "Gemini brief generation failed",
+        details: data
+      });
+    }
+
+    const brief =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    return res.json({
+      success: true,
+      brief
+    });
+
+  } catch (error) {
+    console.error("GENERATE BRIEF ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 app.listen(process.env.PORT || 3000, () => {
   console.log("✅ Server v6 on port", process.env.PORT || 3000);
 });
