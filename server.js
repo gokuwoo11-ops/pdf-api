@@ -43,6 +43,7 @@ app.get("/test-pexels", async (req, res) => {
 
 // ── Clean up LLM HTML artifacts before rendering ─────────────────────────────
 function cleanHtml(html) {
+    html = html.replace(/<div class="pb"><\/div>/g, '');
   // Cut off anything after </html>
   const htmlClose = html.lastIndexOf("</html>");
   if (htmlClose !== -1) {
