@@ -1378,6 +1378,197 @@ app.post("/generate-report-pdf", async (req, res) => {
     });
   }
 });
+// ─────────────────────────────────────────────
+// SIMPLE HTML → READABLE TEXT CLEANER
+// Used for website analysis
+// ─────────────────────────────────────────────
+function extractReadableTextFromHtml(html) {
+  if (!html || typeof html !== "string") return "";
+
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 12000);
+}
+
+// ─────────────────────────────────────────────
+// ROUTE 5 — ANALYZE A LEAD WEBSITE
+// POST /analyze-lead
+// Body:
+// {
+//   "business_name": "...",
+//   "website": "...",
+//   "service_offered": "..."
+// }
+// ─────────────────────────────────────────────
+app.post("/analyze-lead", async (req, res) => {
+  try {
+    const { business_name, website, service_offered } = req.body;
+
+    if (!business_name || typeof business_name !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "business_name is required"
+      });
+    }
+
+    if (!website || typeof website !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "website is required"
+      });
+    }
+
+    if (!service_offered || typeof service_offered !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "service_offered is required"
+      });
+    }
+
+    console.log(`🔎 Analyzing lead: ${business_name}`);
+    console.log(`🌐 Website: ${website}`);
+
+    let websiteText = "";
+    let fetchWarning = null;
+
+    try {
+      const siteResponse = await axios.get(website, {
+        timeout: 15000,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (compatible; LeadResearchBot/1.0; +https://example.com)"
+        }
+      });
+
+      websiteText = extractReadableTextFromHtml(siteResponse.data);
+
+      if (!websiteText || websiteText.length < 120) {
+        fetchWarning =
+          "Website content was very limited or difficult to extract.";
+      }
+    } catch (siteError) {
+      console.log("⚠️ Website fetch failed:", siteError.message);
+
+      fetchWarning =
+        "Website could not be fetched automatically. Analysis is based on the business name, URL, and service offered only.";
+    }
+
+    const prompt = `
+You are a B2B growth analyst and lead qualification expert.
+
+Analyze this business as a potential prospect for the sender's service.
+
+BUSINESS NAME:
+${business_name}
+
+WEBSITE:
+${website}
+
+SERVICE OFFERED BY SENDER:
+${service_offered}
+
+WEBSITE TEXT EXTRACTED:
+${websiteText || "No readable website text extracted."}
+
+WEBSITE FETCH NOTE:
+${fetchWarning || "Website content extracted successfully."}
+
+Return ONLY valid JSON. No markdown. No explanations outside JSON.
+
+Use this exact JSON structure:
+
+{
+  "business_name": "",
+  "website": "",
+  "lead_score": 0,
+  "lead_quality": "Low | Medium | High",
+  "one_line_opportunity": "",
+  "visible_strengths": [
+    "",
+    ""
+  ],
+  "problems_found": [
+    {
+      "title": "",
+      "detail": "",
+      "severity": "Low | Medium | High"
+    },
+    {
+      "title": "",
+      "detail": "",
+      "severity": "Low | Medium | High"
+    },
+    {
+      "title": "",
+      "detail": "",
+      "severity": "Low | Medium | High"
+    },
+    {
+      "title": "",
+      "detail": "",
+      "severity": "Low | Medium | High"
+    }
+  ],
+  "why_they_may_need_this_service": "",
+  "personalization_angle": "",
+  "audit_pdf_raw_notes": ""
+}
+
+Rules:
+- lead_score must be a number from 1 to 100.
+- Base the analysis on visible website evidence when available.
+- Do not claim facts that are not supported.
+- If the website fetch failed, say "possible" or "likely" instead of asserting.
+- audit_pdf_raw_notes must be a strong paragraph that can be sent directly into my existing /generate-report-pdf route to create a 4-page audit PDF.
+- The raw notes should include the business name, service being offered, main problems, growth opportunity, and desired audit tone.
+`;
+
+    const geminiText = await callGemini(prompt, 8192, 0.4);
+
+    let analysis;
+
+    try {
+      const cleaned = geminiText
+        .replace(/```json\s*/gi, "")
+        .replace(/```\s*/gi, "")
+        .trim();
+
+      analysis = JSON.parse(cleaned);
+    } catch (parseError) {
+      console.error("JSON PARSE ERROR:", parseError.message);
+
+      return res.status(500).json({
+        success: false,
+        error: "Gemini returned analysis, but JSON parsing failed",
+        raw_response: geminiText
+      });
+    }
+
+    return res.json({
+      success: true,
+      website_fetch_warning: fetchWarning,
+      analysis
+    });
+
+  } catch (error) {
+    console.error("ANALYZE LEAD ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 // ─────────────────────────────────────────────
 // START SERVER
