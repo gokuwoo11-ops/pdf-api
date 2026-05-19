@@ -1569,6 +1569,144 @@ Rules:
     });
   }
 });
+// ─────────────────────────────────────────────
+// ROUTE 6 — GENERATE OUTREACH + AUDIT PDF
+// POST /generate-outreach
+// Body:
+// {
+//   "analysis": { ...result from /analyze-lead... },
+//   "sender_name": "Sri Nath",
+//   "sender_business": "Your Agency Name",
+//   "sender_service": "website redesign, local SEO, and booking automation"
+// }
+// ─────────────────────────────────────────────
+app.post("/generate-outreach", async (req, res) => {
+  try {
+    const {
+      analysis,
+      sender_name,
+      sender_business,
+      sender_service
+    } = req.body;
+
+    if (!analysis || typeof analysis !== "object") {
+      return res.status(400).json({
+        success: false,
+        error: "analysis object is required"
+      });
+    }
+
+    if (!sender_name || typeof sender_name !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "sender_name is required"
+      });
+    }
+
+    if (!sender_business || typeof sender_business !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "sender_business is required"
+      });
+    }
+
+    if (!sender_service || typeof sender_service !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "sender_service is required"
+      });
+    }
+
+    console.log(`✉️ Generating outreach for: ${analysis.business_name}`);
+
+    // ── Step 1: Generate personalized outreach email ──
+    const outreachPrompt = `
+You are an expert B2B cold email copywriter.
+
+Write a personalized outreach message for this lead.
+
+LEAD ANALYSIS:
+${JSON.stringify(analysis, null, 2)}
+
+SENDER:
+Name: ${sender_name}
+Business: ${sender_business}
+Service Offered: ${sender_service}
+
+Return ONLY valid JSON. No markdown. No explanation.
+
+Use exactly this structure:
+
+{
+  "subject": "",
+  "opening_line": "",
+  "email_body": "",
+  "call_to_action": "",
+  "why_personalized": ""
+}
+
+Rules:
+- Sound human and professional, not spammy.
+- Mention one specific problem from the lead analysis.
+- Keep the full email concise and useful.
+- Do not exaggerate.
+- Do not claim you reviewed anything that the analysis did not support.
+- The CTA should invite a short call or reply.
+- Do not mention AI.
+`;
+
+    const outreachText = await callGemini(outreachPrompt, 4096, 0.5);
+
+    let outreach;
+
+    try {
+      const cleaned = outreachText
+        .replace(/```json\s*/gi, "")
+        .replace(/```\s*/gi, "")
+        .trim();
+
+      outreach = JSON.parse(cleaned);
+    } catch (parseError) {
+      return res.status(500).json({
+        success: false,
+        error: "Gemini outreach JSON parsing failed",
+        raw_response: outreachText
+      });
+    }
+
+    // ── Step 2: Generate 4-page audit PDF from audit notes ──
+    const auditNotes = analysis.audit_pdf_raw_notes;
+
+    if (!auditNotes || typeof auditNotes !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "analysis.audit_pdf_raw_notes is missing"
+      });
+    }
+
+    console.log("📄 Generating personalized audit PDF...");
+
+    const brief = await generateBriefFromNotes(auditNotes);
+    const html = await generateHtmlFromBrief(brief);
+    const pdfUrl = await createPdfFromHtml(html, req);
+
+    console.log("✅ Outreach + PDF complete");
+
+    return res.json({
+      success: true,
+      outreach,
+      pdf_url: pdfUrl
+    });
+
+  } catch (error) {
+    console.error("GENERATE OUTREACH ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 // ─────────────────────────────────────────────
 // START SERVER
