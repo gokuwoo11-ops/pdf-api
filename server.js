@@ -1707,6 +1707,118 @@ Rules:
     });
   }
 });
+// ─────────────────────────────────────────────
+// ROUTE 7 — PROCESS ONE LEAD FULLY
+// Analyze lead → Generate outreach → Generate PDF
+// POST /process-lead
+// ─────────────────────────────────────────────
+app.post("/process-lead", async (req, res) => {
+  try {
+    const {
+      business_name,
+      website,
+      service_offered,
+      sender_name,
+      sender_business
+    } = req.body;
+
+    if (!business_name || typeof business_name !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "business_name is required"
+      });
+    }
+
+    if (!website || typeof website !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "website is required"
+      });
+    }
+
+    if (!service_offered || typeof service_offered !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "service_offered is required"
+      });
+    }
+
+    if (!sender_name || typeof sender_name !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "sender_name is required"
+      });
+    }
+
+    if (!sender_business || typeof sender_business !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "sender_business is required"
+      });
+    }
+
+    console.log(`\n=== PROCESSING FULL LEAD: ${business_name} ===`);
+
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+
+    // Step 1: Analyze lead
+    console.log("Step 1: Analyzing lead...");
+    const analyzeRes = await axios.post(
+      `${baseUrl}/analyze-lead`,
+      {
+        business_name,
+        website,
+        service_offered
+      },
+      { timeout: 180000 }
+    );
+
+    if (!analyzeRes.data.success) {
+      throw new Error("Lead analysis failed");
+    }
+
+    const analysis = analyzeRes.data.analysis;
+    console.log("✅ Lead analysis complete");
+
+    // Step 2: Generate outreach + PDF
+    console.log("Step 2: Generating outreach + PDF...");
+    const outreachRes = await axios.post(
+      `${baseUrl}/generate-outreach`,
+      {
+        analysis,
+        sender_name,
+        sender_business,
+        sender_service: service_offered
+      },
+      { timeout: 300000 }
+    );
+
+    if (!outreachRes.data.success) {
+      throw new Error("Outreach generation failed");
+    }
+
+    console.log("🎉 Full lead processing complete");
+
+    return res.json({
+      success: true,
+      lead: {
+        business_name,
+        website
+      },
+      analysis,
+      outreach: outreachRes.data.outreach,
+      pdf_url: outreachRes.data.pdf_url
+    });
+
+  } catch (error) {
+    console.error("PROCESS LEAD ERROR:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+}); 
 
 // ─────────────────────────────────────────────
 // START SERVER
