@@ -589,9 +589,28 @@ ${rawNotes}
 // ─────────────────────────────────────────────
 // GENERATE RESEARCH BRIEF HELPER
 // ─────────────────────────────────────────────
-async function generateBriefFromNotes(rawNotes) {
-  const prompt = buildBriefPrompt(rawNotes);
-  return await callGemini(prompt, 8192, 0.7);
+async function generateHtmlFromBrief(brief) {
+  const prompt = buildHtmlPrompt(brief);
+
+  // HTML output is huge, so allow Gemini to generate much more text
+  let html = await callGemini(prompt, 50000, 0.5);
+
+  html = cleanHtml(html);
+
+  // Safety check: this report template should contain 9 .page sections
+  const pageCount = (html.match(/class="page/g) || []).length;
+
+  if (pageCount < 9) {
+    throw new Error(
+      `Generated HTML looks incomplete. Only ${pageCount} page sections found. Expected 9.`
+    );
+  }
+
+  if (!html.includes("</html>")) {
+    throw new Error("Generated HTML is incomplete. Closing </html> tag is missing.");
+  }
+
+  return html;
 }
 
 // ─────────────────────────────────────────────
