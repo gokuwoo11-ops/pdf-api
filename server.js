@@ -1436,21 +1436,32 @@ function extractReadableTextFromHtml(html) {
 //   "service_offered": "..."
 // }
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// ROUTE 5 — ANALYZE A LEAD
+// Supports:
+// - website available
+// - no website
+// - Instagram only
+// - Google Maps only
+// - phone/manual notes
+// POST /analyze-lead
+// ─────────────────────────────────────────────
 app.post("/analyze-lead", async (req, res) => {
   try {
-    const { business_name, website, service_offered } = req.body;
+    const {
+      business_name,
+      website,
+      google_maps_url,
+      instagram_url,
+      phone,
+      notes,
+      service_offered
+    } = req.body;
 
     if (!business_name || typeof business_name !== "string") {
       return res.status(400).json({
         success: false,
         error: "business_name is required"
-      });
-    }
-
-    if (!website || typeof website !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "website is required"
       });
     }
 
@@ -1461,61 +1472,84 @@ app.post("/analyze-lead", async (req, res) => {
       });
     }
 
+    const hasAnyContext =
+      website ||
+      google_maps_url ||
+      instagram_url ||
+      phone ||
+      notes;
+
+    if (!hasAnyContext) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Provide at least one of: website, google_maps_url, instagram_url, phone, or notes"
+      });
+    }
+
     console.log(`🔎 Analyzing lead: ${business_name}`);
-    console.log(`🌐 Website: ${website}`);
 
     let websiteText = "";
-    let fetchWarning = null;
+    let websiteFetchStatus = "No website provided";
 
-    try {
-      const siteResponse = await axios.get(website, {
-        timeout: 15000,
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (compatible; LeadResearchBot/1.0; +https://example.com)"
+    if (website && typeof website === "string") {
+      try {
+        console.log(`🌐 Fetching website: ${website}`);
+
+        const siteResponse = await axios.get(website, {
+          timeout: 15000,
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (compatible; LeadResearchBot/1.0)"
+          }
+        });
+
+        websiteText = extractReadableTextFromHtml(siteResponse.data);
+
+        if (!websiteText || websiteText.length < 120) {
+          websiteFetchStatus =
+            "Website loaded, but readable content was limited.";
+        } else {
+          websiteFetchStatus =
+            "Website content extracted successfully.";
         }
-      });
-
-      websiteText = extractReadableTextFromHtml(siteResponse.data);
-
-      if (!websiteText || websiteText.length < 120) {
-        fetchWarning =
-          "Website content was very limited or difficult to extract.";
+      } catch (siteError) {
+        console.log("⚠️ Website fetch failed:", siteError.message);
+        websiteFetchStatus =
+          "Website was provided but could not be fetched automatically.";
       }
-    } catch (siteError) {
-      console.log("⚠️ Website fetch failed:", siteError.message);
-
-      fetchWarning =
-        "Website could not be fetched automatically. Analysis is based on the business name, URL, and service offered only.";
     }
 
     const prompt = `
-You are a B2B growth analyst and lead qualification expert.
+You are a B2B lead qualification analyst.
 
-Analyze this business as a potential prospect for the sender's service.
+Your job is to assess whether this business is a good prospect for the sender's service and identify realistic outreach angles.
 
-BUSINESS NAME:
-${business_name}
-
-WEBSITE:
-${website}
+BUSINESS:
+Name: ${business_name}
+Website: ${website || "No official website provided"}
+Google Maps URL: ${google_maps_url || "Not provided"}
+Instagram URL: ${instagram_url || "Not provided"}
+Phone: ${phone || "Not provided"}
+Manual Notes: ${notes || "None"}
 
 SERVICE OFFERED BY SENDER:
 ${service_offered}
 
-WEBSITE TEXT EXTRACTED:
-${websiteText || "No readable website text extracted."}
+WEBSITE FETCH STATUS:
+${websiteFetchStatus}
 
-WEBSITE FETCH NOTE:
-${fetchWarning || "Website content extracted successfully."}
+WEBSITE TEXT EXTRACTED:
+${websiteText || "No readable website text available."}
 
 Return ONLY valid JSON. No markdown. No explanations outside JSON.
 
-Use this exact JSON structure:
+Use this exact structure:
 
 {
   "business_name": "",
   "website": "",
+  "has_website": true,
   "lead_score": 0,
   "lead_quality": "Low | Medium | High",
   "one_line_opportunity": "",
@@ -1547,16 +1581,25 @@ Use this exact JSON structure:
   ],
   "why_they_may_need_this_service": "",
   "personalization_angle": "",
+  "best_outreach_channel": "Email | Instagram DM | Phone | WhatsApp | Unknown",
   "audit_pdf_raw_notes": ""
 }
 
 Rules:
-- lead_score must be a number from 1 to 100.
-- Base the analysis on visible website evidence when available.
-- Do not claim facts that are not supported.
-- If the website fetch failed, say "possible" or "likely" instead of asserting.
-- audit_pdf_raw_notes must be a strong paragraph that can be sent directly into my existing /generate-report-pdf route to create a 4-page audit PDF.
-- The raw notes should include the business name, service being offered, main problems, growth opportunity, and desired audit tone.
+- lead_score must be from 1 to 100.
+- If no website is provided, treat that as a major opportunity when the sender service includes website or lead funnel work.
+- If website exists, analyze based on the extracted evidence.
+- If evidence is limited, use careful language like "possible", "appears", or "may".
+- Do not invent specific claims like review counts or rankings unless they appear in the provided text or notes.
+- best_outreach_channel should be inferred from available contact info.
+- audit_pdf_raw_notes must be a strong paragraph that can directly generate a 4-page audit PDF.
+- The audit notes should include:
+  business name,
+  available online presence,
+  whether they lack a website,
+  key problems,
+  growth opportunity,
+  and the service offered.
 `;
 
     const geminiText = await callGemini(prompt, 8192, 0.4);
@@ -1571,8 +1614,6 @@ Rules:
 
       analysis = JSON.parse(cleaned);
     } catch (parseError) {
-      console.error("JSON PARSE ERROR:", parseError.message);
-
       return res.status(500).json({
         success: false,
         error: "Gemini returned analysis, but JSON parsing failed",
@@ -1582,7 +1623,7 @@ Rules:
 
     return res.json({
       success: true,
-      website_fetch_warning: fetchWarning,
+      website_fetch_status: websiteFetchStatus,
       analysis
     });
 
@@ -1738,11 +1779,21 @@ Rules:
 // Analyze lead → Generate outreach → Generate PDF
 // POST /process-lead
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// ROUTE 7 — PROCESS ONE LEAD FULLY
+// Analyze lead → Generate outreach → Generate PDF
+// Works with or without a website
+// POST /process-lead
+// ─────────────────────────────────────────────
 app.post("/process-lead", async (req, res) => {
   try {
     const {
       business_name,
       website,
+      google_maps_url,
+      instagram_url,
+      phone,
+      notes,
       service_offered,
       sender_name,
       sender_business
@@ -1752,13 +1803,6 @@ app.post("/process-lead", async (req, res) => {
       return res.status(400).json({
         success: false,
         error: "business_name is required"
-      });
-    }
-
-    if (!website || typeof website !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "website is required"
       });
     }
 
@@ -1783,17 +1827,36 @@ app.post("/process-lead", async (req, res) => {
       });
     }
 
+    const hasAnyContext =
+      website ||
+      google_maps_url ||
+      instagram_url ||
+      phone ||
+      notes;
+
+    if (!hasAnyContext) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Provide at least one of: website, google_maps_url, instagram_url, phone, or notes"
+      });
+    }
+
     console.log(`\n=== PROCESSING FULL LEAD: ${business_name} ===`);
 
     const baseUrl = `${req.protocol}://${req.get("host")}`;
 
-    // Step 1: Analyze lead
     console.log("Step 1: Analyzing lead...");
+
     const analyzeRes = await axios.post(
       `${baseUrl}/analyze-lead`,
       {
         business_name,
         website,
+        google_maps_url,
+        instagram_url,
+        phone,
+        notes,
         service_offered
       },
       { timeout: 180000 }
@@ -1804,10 +1867,11 @@ app.post("/process-lead", async (req, res) => {
     }
 
     const analysis = analyzeRes.data.analysis;
+
     console.log("✅ Lead analysis complete");
 
-    // Step 2: Generate outreach + PDF
     console.log("Step 2: Generating outreach + PDF...");
+
     const outreachRes = await axios.post(
       `${baseUrl}/generate-outreach`,
       {
@@ -1829,7 +1893,10 @@ app.post("/process-lead", async (req, res) => {
       success: true,
       lead: {
         business_name,
-        website
+        website: website || "",
+        google_maps_url: google_maps_url || "",
+        instagram_url: instagram_url || "",
+        phone: phone || ""
       },
       analysis,
       outreach: outreachRes.data.outreach,
@@ -1844,7 +1911,7 @@ app.post("/process-lead", async (req, res) => {
       error: error.message
     });
   }
-}); 
+});
 // ─────────────────────────────────────────────
 // ROUTE 8 — PROCESS MULTIPLE LEADS
 // Max 3 leads per request for stability
