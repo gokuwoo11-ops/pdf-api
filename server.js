@@ -1845,6 +1845,137 @@ app.post("/process-lead", async (req, res) => {
     });
   }
 }); 
+// ─────────────────────────────────────────────
+// ROUTE 8 — PROCESS MULTIPLE LEADS
+// Max 3 leads per request for stability
+// POST /process-leads
+// ─────────────────────────────────────────────
+app.post("/process-leads", async (req, res) => {
+  try {
+    const {
+      leads,
+      service_offered,
+      sender_name,
+      sender_business
+    } = req.body;
+
+    if (!Array.isArray(leads) || leads.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "leads must be a non-empty array"
+      });
+    }
+
+    if (leads.length > 3) {
+      return res.status(400).json({
+        success: false,
+        error: "Maximum 3 leads allowed per request for now"
+      });
+    }
+
+    if (!service_offered || typeof service_offered !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "service_offered is required"
+      });
+    }
+
+    if (!sender_name || typeof sender_name !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "sender_name is required"
+      });
+    }
+
+    if (!sender_business || typeof sender_business !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "sender_business is required"
+      });
+    }
+
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const results = [];
+
+    console.log(`\n=== PROCESSING ${leads.length} LEADS ===`);
+
+    for (let i = 0; i < leads.length; i++) {
+      const lead = leads[i];
+
+      const business_name = lead.business_name;
+      const website = lead.website;
+
+      if (!business_name || !website) {
+        results.push({
+          success: false,
+          business_name: business_name || "Unknown",
+          website: website || "Missing",
+          error: "business_name and website are required"
+        });
+        continue;
+      }
+
+      try {
+        console.log(`\n▶ Lead ${i + 1}/${leads.length}: ${business_name}`);
+
+        const processRes = await axios.post(
+          `${baseUrl}/process-lead`,
+          {
+            business_name,
+            website,
+            service_offered,
+            sender_name,
+            sender_business
+          },
+          {
+            timeout: 600000
+          }
+        );
+
+        results.push({
+          success: true,
+          ...processRes.data
+        });
+
+        console.log(`✅ Finished: ${business_name}`);
+
+      } catch (leadError) {
+        console.error(`❌ Failed: ${business_name}`, leadError.message);
+
+        results.push({
+          success: false,
+          business_name,
+          website,
+          error:
+            leadError.response?.data?.error ||
+            leadError.message ||
+            "Unknown lead processing error"
+        });
+      }
+    }
+
+    const successCount = results.filter(r => r.success).length;
+    const failedCount = results.length - successCount;
+
+    console.log(`🎉 Batch complete: ${successCount} success, ${failedCount} failed`);
+
+    return res.json({
+      success: true,
+      processed_count: results.length,
+      success_count: successCount,
+      failed_count: failedCount,
+      results
+    });
+
+  } catch (error) {
+    console.error("PROCESS LEADS ERROR:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 // ─────────────────────────────────────────────
 // START SERVER
