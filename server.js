@@ -1594,7 +1594,11 @@ Rules:
 - If website exists, analyze based on the extracted evidence.
 - If evidence is limited, use careful language like "possible", "appears", or "may".
 - Do not invent specific claims like review counts or rankings unless they appear in the provided text or notes.
-- best_outreach_channel should be inferred from available contact info.
+- best_outreach_channel must only use contact channels that are actually provided.
+- If phone is provided, Phone or WhatsApp may be used.
+- If instagram_url is provided, Instagram DM may be used.
+- If website/contact email is clearly available in provided data, Email may be used.
+- If no usable contact channel is provided, return "Unknown".
 - audit_pdf_raw_notes must be a strong paragraph that can directly generate a 4-page audit PDF.
 - The audit notes should include:
   business name,
