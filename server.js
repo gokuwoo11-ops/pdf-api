@@ -555,6 +555,11 @@ app.post("/generate-pdf", async (req, res) => {
 // BRIEF PROMPT BUILDER
 // ─────────────────────────────────────────────
 function buildBriefPrompt(rawNotes) {
+    const currentPeriod = new Date().toLocaleString("en-IN", {
+    month: "long",
+    year: "numeric",
+    timeZone: "Asia/Kolkata"
+  });
   return `
 You are a B2B growth analyst preparing a lead audit brief.
 
@@ -568,7 +573,8 @@ TAGLINE: [one sharp sentence about the opportunity found]
 AUDIENCE: [who this audit is for — the prospect's business type]
 SERVICE PROVIDER: [who is sending this — extract from notes or write "Our Agency"]
 CONTACT: [email or phone if mentioned, otherwise write "contact@youragency.com"]
-CURRENT PERIOD: [current month and year]
+CURRENT PERIOD: ${currentPeriod}
+Use this exact current period. Do not change the year or invent another date.
 OPPORTUNITY SCORE: [a number 60-95 representing how strong this lead is]
 
 PROBLEMS SECTION:
