@@ -576,6 +576,9 @@ Read the input and produce a structured audit brief that will become a 4-page PD
 The brief must include:
 
 CATEGORY: [CORPORATE / TECH / HEALTH / STARTUP / SPORTS / ACADEMIC / ECO]
+CATEGORY SELECTION RULE:
+- Use SPORTS for gyms, fitness centres, fitness studios, workout businesses, personal training brands, sports clubs, and athletic training businesses.
+- Use HEALTH only for clinics, hospitals, dental practices, medical care, wellness clinics, and healthcare providers.
 TOPIC: [business name or industry being audited — 5 words max]
 TAGLINE: [one sharp sentence about the opportunity found]
 AUDIENCE: [who this audit is for — the prospect's business type]
