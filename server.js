@@ -277,6 +277,15 @@ async function fetchImageAsBase64(query) {
 // REPLACE [IMG:...] WITH REAL IMAGES
 // ─────────────────────────────────────────────
 async function embedImages(html) {
+  // First: normalize bad Gemini outputs like:
+  // <img src="[IMG:keywords]" alt="Background">
+  // into plain:
+  // [IMG:keywords]
+  html = html.replace(
+    /<img[^>]*\[IMG:([^\]]+)\][^>]*>/gi,
+    "[IMG:$1]"
+  );
+
   const pattern = /\[IMG:([^\]]+)\]/g;
   const matches = [...html.matchAll(pattern)];
 
@@ -330,7 +339,6 @@ async function embedImages(html) {
 
   return out;
 }
-
 // ─────────────────────────────────────────────
 // AUTO-FIT OVERFLOWING PAGE CONTENT
 // Works with your HTML classes:
@@ -728,8 +736,26 @@ ACADEMIC:   --c1:#4A148C  --c2:#7B1FA2  --dark:#0D0020  --bg:#F3E5F5
 ECO:        --c1:#00695C  --c2:#00ACC1  --dark:#001A16  --bg:#E0F2F1
 
 IMAGE RULES:
+IMAGE RULES:
 [IMG:keywords] goes on cover page and page 3 only.
-Place as first element inside that page div.
+
+The [IMG:...] marker must be written as plain standalone text, exactly like this:
+[IMG:keyword1 keyword2 keyword3 keyword4 keyword5 keyword6]
+
+Do NOT wrap [IMG:...] inside:
+- <img>
+- src=""
+- quotes
+- divs
+- any HTML tag
+
+Correct:
+[IMG:modern dental clinic reception professional interior sunlight]
+
+Wrong:
+<img src="[IMG:modern dental clinic reception professional interior sunlight]" alt="Background">
+
+Place the plain [IMG:...] marker as the first element inside that image container.
 
 OUTPUT EXACTLY THIS 4-PAGE HTML — fill every field from brief:
 
