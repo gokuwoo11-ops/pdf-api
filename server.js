@@ -585,6 +585,11 @@ Input notes:
 ${rawNotes}
 `;
 }
+async function generateBriefFromNotes(rawNotes) {
+  const prompt = buildBriefPrompt(rawNotes);
+  const brief = await callGemini(prompt, 8192, 0.7);
+  return brief;
+}
 
 // ─────────────────────────────────────────────
 // GENERATE RESEARCH BRIEF HELPER
