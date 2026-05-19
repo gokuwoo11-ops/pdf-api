@@ -321,7 +321,7 @@ async function autoFitPageContent(page) {
                 window.getComputedStyle(el).fontSize
               );
 
-              if (size > 8) {
+              if (size > 11) {
                 el.style.fontSize = size - 0.3 + "px";
               }
             });
@@ -742,7 +742,7 @@ body { font-family:'Inter',sans-serif; }
   letter-spacing:3px; text-transform:uppercase;
 }
 .cover-date {
-  font-size:12px; color:rgba(255,255,255,0.4);
+  font-size:12px; color:rgba(255,255,255,0.62);
   font-weight:400;
 }
 .cover-middle { margin-top:auto; padding-bottom:40px; }
@@ -768,7 +768,7 @@ body { font-family:'Inter',sans-serif; }
   border-top:1px solid rgba(255,255,255,0.1);
 }
 .cover-meta-row { display:flex; gap:40px; }
-.cover-meta { font-size:11px; color:rgba(255,255,255,0.35); }
+.cover-meta { font-size:11.5px; color:rgba(255,255,255,0.58); }
 .cover-meta strong {
   display:block; color:#fff;
   font-size:13px; font-weight:600; margin-top:4px;
@@ -820,8 +820,8 @@ body { font-family:'Inter',sans-serif; }
 }
 .problems-body { padding:28px 52px 28px; overflow:hidden; }
 .section-intro {
-  font-size:13px; line-height:1.75;
-  color:rgba(255,255,255,0.55);
+  font-size:14px; line-height:1.75;
+  color:rgba(255,255,255,0.78);
   margin-bottom:22px; max-width:620px;
 }
 
@@ -847,7 +847,7 @@ body { font-family:'Inter',sans-serif; }
   text-transform:uppercase; letter-spacing:0.5px;
 }
 .prob-desc {
-  font-size:12px; color:rgba(255,255,255,0.55);
+  font-size:13px; color:rgba(255,255,255,0.76);
   line-height:1.6; margin:0;
 }
 
@@ -975,7 +975,7 @@ body { font-family:'Inter',sans-serif; }
   text-transform:uppercase; letter-spacing:0.5px;
 }
 .service-card p {
-  font-size:11px; color:rgba(255,255,255,0.5);
+  font-size:12.5px; color:rgba(255,255,255,0.76);
   line-height:1.6; margin:0;
 }
 
@@ -1002,7 +1002,7 @@ body { font-family:'Inter',sans-serif; }
   font-weight:700; margin-bottom:4px;
 }
 .step-label {
-  font-size:11px; color:rgba(255,255,255,0.65);
+  font-size:12px; color:rgba(255,255,255,0.82);
   font-weight:500; line-height:1.4;
 }
 
