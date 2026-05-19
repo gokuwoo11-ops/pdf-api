@@ -71,6 +71,12 @@ app.get("/test-pexels", async (req, res) => {
 // ─────────────────────────────────────────────
 // GEMINI HELPER
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// GEMINI HELPER WITH AUTO FALLBACK
+// Tries Gemini 3 Flash first.
+// If Google returns 503 high-demand error,
+// it automatically retries with Gemini 3.1 Flash-Lite.
+// ─────────────────────────────────────────────
 async function callGemini(prompt, maxTokens = 8192, temperature = 0.7) {
   const apiKey = process.env.GEMINI_API_KEY;
 
@@ -78,48 +84,80 @@ async function callGemini(prompt, maxTokens = 8192, temperature = 0.7) {
     throw new Error("GEMINI_API_KEY not set in Render");
   }
 
-  const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
+  const models = [
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite"
+  ];
+
+  let lastError = null;
+
+  for (const model of models) {
+    try {
+      console.log(`🤖 Trying Gemini model: ${model}`);
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": apiKey
+          },
+          body: JSON.stringify({
+            contents: [
               {
-                text: prompt
+                parts: [
+                  {
+                    text: prompt
+                  }
+                ]
               }
-            ]
-          }
-        ],
-        generationConfig: {
-          maxOutputTokens: maxTokens,
-          temperature
+            ],
+            generationConfig: {
+              maxOutputTokens: maxTokens,
+              temperature
+            }
+          })
         }
-      })
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        const code = data?.error?.code;
+        const message = data?.error?.message || "Unknown Gemini error";
+
+        console.log(`⚠️ ${model} failed: ${code} - ${message}`);
+
+        lastError = new Error(
+          `Gemini model ${model} failed: ${JSON.stringify(data)}`
+        );
+
+        // If 503, try next fallback model
+        if (code === 503) {
+          continue;
+        }
+
+        // For other errors, stop immediately
+        throw lastError;
+      }
+
+      const text =
+        data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!text) {
+        throw new Error(`${model} returned empty response`);
+      }
+
+      console.log(`✅ Gemini success with: ${model}`);
+      return text;
+
+    } catch (error) {
+      lastError = error;
     }
-  );
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(
-      "Gemini API failed: " + JSON.stringify(data)
-    );
   }
 
-  const text =
-    data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-  if (!text) {
-    throw new Error("Gemini returned empty response");
-  }
-
-  return text;
+  throw lastError || new Error("All Gemini models failed");
 }
 
 // ─────────────────────────────────────────────
