@@ -1708,6 +1708,46 @@ out center tags;
   };
 }
 
+async function requestOverpassWithFallback(overpassQuery, contactEmail) {
+  const endpoints = [
+    "https://overpass-api.de/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
+    "https://z.overpass-api.de/api/interpreter"
+  ];
+
+  const headers = {
+    "Content-Type": "text/plain",
+    Accept: "application/json",
+    "User-Agent": `AI-Lead-Outreach-System/1.0 (contact: ${contactEmail})`,
+    Referer: "https://pdf-api-bw6a.onrender.com/"
+  };
+
+  let lastError = null;
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await axios.post(endpoint, overpassQuery, {
+        headers,
+        timeout: 90000
+      });
+
+      return response;
+    } catch (error) {
+      const status = error?.response?.status;
+      const shouldRetry = [429, 500, 502, 503, 504].includes(status);
+      console.error(`OVERPASS REQUEST FAILED (${endpoint}):`, error.message, `status=${status}`);
+
+      if (!shouldRetry) {
+        throw error;
+      }
+
+      lastError = error;
+    }
+  }
+
+  throw new Error("All Overpass lead discovery endpoints failed");
+}
+
 // ─────────────────────────────────────────────
 // ROUTE 9 — FIND LEADS + OPTIONAL SUPABASE SAVE
 // ─────────────────────────────────────────────
@@ -1726,19 +1766,7 @@ app.post("/find-leads", async (req, res) => {
     const { label, query: overpassQuery } = buildOverpassQuery(target_business, location);
     const contactEmail = process.env.OVERPASS_CONTACT_EMAIL || process.env.CONTACT_EMAIL || "contact@example.com";
 
-    const response = await axios.post(
-      "https://overpass-api.de/api/interpreter",
-      overpassQuery,
-      {
-        headers: {
-          "Content-Type": "text/plain",
-          Accept: "application/json",
-          "User-Agent": `AI-Lead-Outreach-System/1.0 (contact: ${contactEmail})`,
-          Referer: "https://pdf-api-bw6a.onrender.com/"
-        },
-        timeout: 60000
-      }
-    );
+    const response = await requestOverpassWithFallback(overpassQuery, contactEmail);
 
     const elements = response.data?.elements || [];
     const seen = new Set();
