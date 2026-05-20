@@ -469,19 +469,38 @@ async function createPdfFromHtml(html, req) {
 
     await browser.close();
     browser = null;
+const name = `report-${Date.now()}.pdf`;
 
-    const dir = path.join(__dirname, "public");
-    fs.mkdirSync(dir, { recursive: true });
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const bucket = process.env.SUPABASE_PDF_BUCKET || "pdf-reports";
 
-    const name = `report-${Date.now()}.pdf`;
-    fs.writeFileSync(path.join(dir, name), pdf);
+if (!supabaseUrl || !supabaseKey) {
+  throw new Error("Supabase storage environment variables are missing");
+}
 
-    const url = `${req.protocol}://${req.get("host")}/files/${name}`;
+console.log("☁️ Uploading PDF to Supabase Storage...");
 
-    console.log("🎉 PDF ready:", url);
+await axios.post(
+  `${supabaseUrl}/storage/v1/object/${bucket}/${name}`,
+  pdf,
+  {
+    headers: {
+      "Authorization": `Bearer ${supabaseKey}`,
+      "apikey": supabaseKey,
+      "Content-Type": "application/pdf",
+      "x-upsert": "true"
+    },
+    maxBodyLength: Infinity,
+    timeout: 60000
+  }
+);
 
-    return url;
+const url = `${supabaseUrl}/storage/v1/object/public/${bucket}/${name}`;
 
+console.log("🎉 Permanent PDF ready:", url);
+
+return url;
   } catch (error) {
     if (browser) {
       try {
