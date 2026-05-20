@@ -2116,16 +2116,15 @@ out center tags;
 `;
 
     const response = await axios.post(
-      "https://overpass-api.de/api/interpreter",
-      overpassQuery,
-      {
-        headers: {
-          "Content-Type": "text/plain"
-        },
-        timeout: 60000
-      }
-    );
-
+  "https://overpass-api.de/api/interpreter",
+  new URLSearchParams({ data: overpassQuery }).toString(),
+  {
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    timeout: 60000
+  }
+);
     const elements = response.data?.elements || [];
 
     const leads = elements
