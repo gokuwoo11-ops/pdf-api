@@ -117,6 +117,42 @@ async function findCampaignById(campaignId) {
   return Array.isArray(rows) ? rows[0] || null : null;
 }
 
+async function getCampaignLeadSummary(campaignId) {
+  if (!campaignId) {
+    return {
+      total_leads: 0,
+      new_leads: 0,
+      processing_leads: 0,
+      processed_leads: 0,
+      failed_leads: 0
+    };
+  }
+
+  const rows = await supabaseRequest({
+    table: "leads",
+    query: `?campaign_id=eq.${encodeURIComponent(campaignId)}&select=processing_status`
+  });
+
+  const leadRows = Array.isArray(rows) ? rows : [];
+  const summary = {
+    total_leads: leadRows.length,
+    new_leads: 0,
+    processing_leads: 0,
+    processed_leads: 0,
+    failed_leads: 0
+  };
+
+  leadRows.forEach((lead) => {
+    const status = String(lead.processing_status || "").toLowerCase();
+    if (status === "new") summary.new_leads++;
+    else if (status === "processing") summary.processing_leads++;
+    else if (status === "processed") summary.processed_leads++;
+    else if (status === "failed") summary.failed_leads++;
+  });
+
+  return summary;
+}
+
 async function findLeadById(leadId) {
   if (!leadId) return null;
 
@@ -452,6 +488,52 @@ app.post("/campaigns", async (req, res) => {
 
   } catch (error) {
     console.error("CREATE CAMPAIGN ERROR:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.get("/campaigns", async (req, res) => {
+  try {
+    const rows = await supabaseRequest({
+      table: "campaigns",
+      query: "?select=*&order=created_at.desc"
+    });
+
+    const campaigns = Array.isArray(rows) ? rows : [];
+
+    const campaignsWithSummary = await Promise.all(
+      campaigns.map(async (campaign) => {
+        const summary = await getCampaignLeadSummary(campaign.id);
+
+        return {
+          id: campaign.id,
+          client_business_name: campaign.client_business_name,
+          sender_name: campaign.sender_name,
+          sender_email: campaign.sender_email,
+          service_offer: campaign.service_offer,
+          ideal_target_customer: campaign.ideal_target_customer,
+          target_location: campaign.target_location,
+          lead_search_keyword: campaign.lead_search_keyword,
+          leads_requested: campaign.leads_requested,
+          status: campaign.status,
+          created_at: campaign.created_at,
+          updated_at: campaign.updated_at,
+          summary
+        };
+      })
+    );
+
+    return res.json({
+      success: true,
+      campaigns: campaignsWithSummary
+    });
+
+  } catch (error) {
+    console.error("GET CAMPAIGNS ERROR:", error.message);
 
     return res.status(500).json({
       success: false,
