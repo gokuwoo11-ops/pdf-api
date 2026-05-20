@@ -2115,12 +2115,15 @@ area["name"="${location}"]["boundary"="administrative"]->.searchArea;
 out center tags;
 `;
 
-    const response = await axios.post(
+ const response = await axios.post(
   "https://overpass-api.de/api/interpreter",
-  new URLSearchParams({ data: overpassQuery }).toString(),
+  overpassQuery,
   {
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded"
+      "Content-Type": "text/plain",
+      "Accept": "application/json",
+      "User-Agent": "AI-Lead-Outreach-System/1.0 (contact: gokuwoo11@gmail.com)",
+      "Referer": "https://pdf-api-bw6a.onrender.com/"
     },
     timeout: 60000
   }
