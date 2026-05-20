@@ -26,10 +26,224 @@ app.use((err, req, res, next) => {
 app.use("/files", express.static(path.join(__dirname, "public")));
 
 // ─────────────────────────────────────────────
+// SUPABASE HELPERS — REAL SAAS STORAGE LAYER
+// ─────────────────────────────────────────────
+function getSupabaseConfig() {
+  const url = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const pdfBucket = process.env.SUPABASE_PDF_BUCKET || "pdf-reports";
+
+  if (!url || !serviceRoleKey) {
+    throw new Error("Supabase environment variables are missing");
+  }
+
+  return {
+    url: url.replace(/\/$/, ""),
+    serviceRoleKey,
+    pdfBucket
+  };
+}
+
+async function supabaseRequest({ method = "GET", table, query = "", body, headers = {} }) {
+  const { url, serviceRoleKey } = getSupabaseConfig();
+
+  const response = await axios({
+    method,
+    url: `${url}/rest/v1/${table}${query}`,
+    data: body,
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+      ...headers
+    },
+    timeout: 60000,
+    maxBodyLength: Infinity
+  });
+
+  return response.data;
+}
+
+async function insertOne(table, record) {
+  const rows = await supabaseRequest({
+    method: "POST",
+    table,
+    body: record,
+    headers: {
+      Prefer: "return=representation"
+    }
+  });
+
+  return Array.isArray(rows) ? rows[0] : rows;
+}
+
+async function insertMany(table, records) {
+  if (!records.length) return [];
+
+  const rows = await supabaseRequest({
+    method: "POST",
+    table,
+    body: records,
+    headers: {
+      Prefer: "return=representation"
+    }
+  });
+
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function updateRows(table, query, patch) {
+  const rows = await supabaseRequest({
+    method: "PATCH",
+    table,
+    query,
+    body: patch,
+    headers: {
+      Prefer: "return=representation"
+    }
+  });
+
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function findCampaignById(campaignId) {
+  if (!campaignId) return null;
+
+  const rows = await supabaseRequest({
+    table: "campaigns",
+    query: `?id=eq.${encodeURIComponent(campaignId)}&select=*`
+  });
+
+  return Array.isArray(rows) ? rows[0] || null : null;
+}
+
+async function findLeadById(leadId) {
+  if (!leadId) return null;
+
+  const rows = await supabaseRequest({
+    table: "leads",
+    query: `?id=eq.${encodeURIComponent(leadId)}&select=*`
+  });
+
+  return Array.isArray(rows) ? rows[0] || null : null;
+}
+
+async function insertLeadsForCampaign(campaignId, leads) {
+  if (!campaignId || !leads.length) return [];
+
+  const campaign = await findCampaignById(campaignId);
+  if (!campaign) {
+    throw new Error("campaign_id does not exist in Supabase");
+  }
+
+  const records = leads.map((lead) => ({
+    campaign_id: campaignId,
+    business_name: lead.business_name,
+    website: lead.website || null,
+    google_maps_url: lead.google_maps_url || null,
+    instagram_url: lead.instagram_url || null,
+    phone: lead.phone || null,
+    email: lead.email || null,
+    address: lead.address || null,
+    notes: lead.notes || null,
+    source: lead.source || "openstreetmap",
+    processing_status: "new"
+  }));
+
+  return await insertMany("leads", records);
+}
+
+async function saveLeadProcessingToSupabase({
+  leadId,
+  campaignId,
+  leadPayload,
+  analysis,
+  outreach,
+  pdfUrl
+}) {
+  let lead = null;
+
+  if (leadId) {
+    lead = await findLeadById(leadId);
+    if (!lead) {
+      throw new Error("lead_id does not exist in Supabase");
+    }
+  } else if (campaignId) {
+    const campaign = await findCampaignById(campaignId);
+    if (!campaign) {
+      throw new Error("campaign_id does not exist in Supabase");
+    }
+
+    lead = await insertOne("leads", {
+      campaign_id: campaignId,
+      business_name: leadPayload.business_name,
+      website: leadPayload.website || null,
+      google_maps_url: leadPayload.google_maps_url || null,
+      instagram_url: leadPayload.instagram_url || null,
+      phone: leadPayload.phone || null,
+      email: leadPayload.email || null,
+      address: leadPayload.address || null,
+      notes: leadPayload.notes || null,
+      source: leadPayload.source || "manual_or_api",
+      processing_status: "processing"
+    });
+  }
+
+  if (!lead) {
+    return {
+      saved: false,
+      lead_id: null
+    };
+  }
+
+  await insertOne("lead_analyses", {
+    lead_id: lead.id,
+    lead_score: analysis.lead_score ?? null,
+    lead_quality: analysis.lead_quality || null,
+    one_line_opportunity: analysis.one_line_opportunity || null,
+    visible_strengths: analysis.visible_strengths || [],
+    problems_found: analysis.problems_found || [],
+    why_they_may_need_this_service: analysis.why_they_may_need_this_service || null,
+    personalization_angle: analysis.personalization_angle || null,
+    best_outreach_channel: analysis.best_outreach_channel || null,
+    audit_pdf_raw_notes: analysis.audit_pdf_raw_notes || null
+  });
+
+  await insertOne("outreach_messages", {
+    lead_id: lead.id,
+    subject: outreach.subject || null,
+    opening_line: outreach.opening_line || null,
+    email_body: outreach.email_body || null,
+    call_to_action: outreach.call_to_action || null,
+    why_personalized: outreach.why_personalized || null
+  });
+
+  await insertOne("reports", {
+    lead_id: lead.id,
+    pdf_url: pdfUrl,
+    storage_bucket: process.env.SUPABASE_PDF_BUCKET || "pdf-reports"
+  });
+
+  await updateRows(
+    "leads",
+    `?id=eq.${encodeURIComponent(lead.id)}`,
+    {
+      processing_status: "processed",
+      updated_at: new Date().toISOString()
+    }
+  );
+
+  return {
+    saved: true,
+    lead_id: lead.id
+  };
+}
+
+// ─────────────────────────────────────────────
 // HEALTH CHECK
 // ─────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.send("AI Prospecting API v8 running");
+  res.send("AI Prospecting SaaS API v9 running");
 });
 
 // ─────────────────────────────────────────────
@@ -70,9 +284,6 @@ app.get("/test-pexels", async (req, res) => {
 
 // ─────────────────────────────────────────────
 // GEMINI HELPER WITH AUTO FALLBACK
-// Tries Gemini 3 Flash first.
-// If Google returns 503 high-demand error,
-// it automatically retries with Gemini 3.1 Flash-Lite.
 // ─────────────────────────────────────────────
 async function callGemini(prompt, maxTokens = 8192, temperature = 0.7) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -130,17 +341,14 @@ async function callGemini(prompt, maxTokens = 8192, temperature = 0.7) {
           `Gemini model ${model} failed: ${JSON.stringify(data)}`
         );
 
-        // If 503, try next fallback model
         if (code === 503) {
           continue;
         }
 
-        // For other errors, stop immediately
         throw lastError;
       }
 
-      const text =
-        data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
       if (!text) {
         throw new Error(`${model} returned empty response`);
@@ -175,6 +383,75 @@ app.get("/gemini-test", async (req, res) => {
 
   } catch (error) {
     console.error("GEMINI TEST ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ─────────────────────────────────────────────
+// CREATE CAMPAIGN — REAL SAAS ENTRY POINT
+// POST /campaigns
+// ─────────────────────────────────────────────
+app.post("/campaigns", async (req, res) => {
+  try {
+    const {
+      user_id,
+      client_business_name,
+      sender_name,
+      sender_email,
+      service_offer,
+      ideal_target_customer,
+      target_location,
+      outreach_tone = "Professional and concise",
+      lead_search_keyword,
+      leads_requested = 10,
+      status = "ready"
+    } = req.body;
+
+    const required = {
+      client_business_name,
+      sender_name,
+      service_offer,
+      ideal_target_customer,
+      target_location,
+      lead_search_keyword
+    };
+
+    const missing = Object.entries(required)
+      .filter(([, value]) => !value || typeof value !== "string")
+      .map(([key]) => key);
+
+    if (missing.length) {
+      return res.status(400).json({
+        success: false,
+        error: `Missing required campaign fields: ${missing.join(", ")}`
+      });
+    }
+
+    const campaign = await insertOne("campaigns", {
+      user_id: user_id || null,
+      client_business_name,
+      sender_name,
+      sender_email: sender_email || null,
+      service_offer,
+      ideal_target_customer,
+      target_location,
+      outreach_tone,
+      lead_search_keyword,
+      leads_requested: Math.min(Math.max(Number(leads_requested) || 10, 1), 100),
+      status
+    });
+
+    return res.json({
+      success: true,
+      campaign
+    });
+
+  } catch (error) {
+    console.error("CREATE CAMPAIGN ERROR:", error.message);
 
     return res.status(500).json({
       success: false,
@@ -274,10 +551,6 @@ async function fetchImageAsBase64(query) {
 // REPLACE [IMG:...] WITH REAL IMAGES
 // ─────────────────────────────────────────────
 async function embedImages(html) {
-  // First: normalize bad Gemini outputs like:
-  // <img src="[IMG:keywords]" alt="Background">
-  // into plain:
-  // [IMG:keywords]
   html = html.replace(
     /<img[^>]*\[IMG:([^\]]+)\][^>]*>/gi,
     "[IMG:$1]"
@@ -339,10 +612,6 @@ async function embedImages(html) {
 
 // ─────────────────────────────────────────────
 // AUTO-FIT OVERFLOWING PAGE CONTENT
-// Works with your HTML classes:
-// .content-band-split
-// .content-band-dark
-// .content-band-light
 // ─────────────────────────────────────────────
 async function autoFitPageContent(page) {
   await page.evaluate(() => {
@@ -380,11 +649,8 @@ async function autoFitPageContent(page) {
               );
 
               if (pad > 5) {
-                el.style.paddingTop =
-                  Math.max(5, pad - 1) + "px";
-
-                el.style.paddingBottom =
-                  Math.max(5, pad - 1) + "px";
+                el.style.paddingTop = Math.max(5, pad - 1) + "px";
+                el.style.paddingBottom = Math.max(5, pad - 1) + "px";
               }
             });
 
@@ -394,18 +660,15 @@ async function autoFitPageContent(page) {
             )
             .forEach((el) => {
               const style = window.getComputedStyle(el);
-
               const mb = parseFloat(style.marginBottom || 0);
               const mt = parseFloat(style.marginTop || 0);
 
               if (mb > 4) {
-                el.style.marginBottom =
-                  Math.max(4, mb - 2) + "px";
+                el.style.marginBottom = Math.max(4, mb - 2) + "px";
               }
 
               if (mt > 4) {
-                el.style.marginTop =
-                  Math.max(4, mt - 2) + "px";
+                el.style.marginTop = Math.max(4, mt - 2) + "px";
               }
             });
 
@@ -418,7 +681,6 @@ async function autoFitPageContent(page) {
 
 // ─────────────────────────────────────────────
 // PDF GENERATOR HELPER
-// HTML → Images → Puppeteer → PDF URL
 // ─────────────────────────────────────────────
 async function createPdfFromHtml(html, req) {
   let browser;
@@ -443,7 +705,6 @@ async function createPdfFromHtml(html, req) {
     });
 
     const page = await browser.newPage();
-
     page.setDefaultTimeout(45000);
     page.setDefaultNavigationTimeout(45000);
 
@@ -469,24 +730,17 @@ async function createPdfFromHtml(html, req) {
     browser = null;
 
     const name = `report-${Date.now()}.pdf`;
-
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    const bucket = process.env.SUPABASE_PDF_BUCKET || "pdf-reports";
-
-    if (!supabaseUrl || !supabaseKey) {
-      throw new Error("Supabase storage environment variables are missing");
-    }
+    const { url: supabaseUrl, serviceRoleKey, pdfBucket } = getSupabaseConfig();
 
     console.log("☁️ Uploading PDF to Supabase Storage...");
 
     await axios.post(
-      `${supabaseUrl}/storage/v1/object/${bucket}/${name}`,
+      `${supabaseUrl}/storage/v1/object/${pdfBucket}/${name}`,
       pdf,
       {
         headers: {
-          "Authorization": `Bearer ${supabaseKey}`,
-          "apikey": supabaseKey,
+          Authorization: `Bearer ${serviceRoleKey}`,
+          apikey: serviceRoleKey,
           "Content-Type": "application/pdf",
           "x-upsert": "true"
         },
@@ -495,11 +749,11 @@ async function createPdfFromHtml(html, req) {
       }
     );
 
-    const url = `${supabaseUrl}/storage/v1/object/public/${bucket}/${name}`;
+    const url = `${supabaseUrl}/storage/v1/object/public/${pdfBucket}/${name}`;
 
     console.log("🎉 Permanent PDF ready:", url);
-
     return url;
+
   } catch (error) {
     if (browser) {
       try {
@@ -513,8 +767,6 @@ async function createPdfFromHtml(html, req) {
 
 // ─────────────────────────────────────────────
 // ROUTE 1 — GENERATE PDF FROM HTML DIRECTLY
-// POST /generate-pdf
-// Body: { "html": "<!DOCTYPE html>..." }
 // ─────────────────────────────────────────────
 app.post("/generate-pdf", async (req, res) => {
   try {
@@ -530,10 +782,7 @@ app.post("/generate-pdf", async (req, res) => {
         html = req.body;
       }
     } else {
-      html =
-        req.body.html ||
-        req.body.answer ||
-        req.body.source;
+      html = req.body.html || req.body.answer || req.body.source;
     }
 
     if (
@@ -662,14 +911,11 @@ ${rawNotes}
 
 async function generateBriefFromNotes(rawNotes) {
   const prompt = buildBriefPrompt(rawNotes);
-  const brief = await callGemini(prompt, 8192, 0.7);
-  return brief;
+  return await callGemini(prompt, 8192, 0.7);
 }
 
 // ─────────────────────────────────────────────
 // ROUTE 2 — GENERATE RESEARCH BRIEF
-// POST /generate-brief
-// Body: { "raw_notes": "..." }
 // ─────────────────────────────────────────────
 app.post("/generate-brief", async (req, res) => {
   try {
@@ -678,15 +924,12 @@ app.post("/generate-brief", async (req, res) => {
     if (!raw_notes || typeof raw_notes !== "string") {
       return res.status(400).json({
         success: false,
-        error:
-          "Missing raw_notes. Send JSON like: { raw_notes: 'your topic here' }"
+        error: "Missing raw_notes. Send JSON like: { raw_notes: 'your topic here' }"
       });
     }
 
     console.log("📋 Generating research brief...");
-
     const brief = await generateBriefFromNotes(raw_notes);
-
     console.log("✅ Brief generated:", brief.length, "chars");
 
     return res.json({
@@ -706,8 +949,6 @@ app.post("/generate-brief", async (req, res) => {
 
 // ─────────────────────────────────────────────
 // AUDIT HTML PROMPT BUILDER
-// Designed for B2B lead audit PDFs
-// 4 pages: Cover, Problems, Opportunity, Solution
 // ─────────────────────────────────────────────
 function buildHtmlPrompt(brief) {
   return `
@@ -758,537 +999,104 @@ OUTPUT EXACTLY THIS 4-PAGE HTML — fill every field from brief:
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@700;900&display=swap" rel="stylesheet">
 <style>
-:root {
-  --c1: SET_FROM_THEME;
-  --c2: SET_FROM_THEME;
-  --dark: SET_FROM_THEME;
-  --bg: SET_FROM_THEME;
-  --white: #ffffff;
-  --gray: #6B7280;
-  --light: #F3F4F6;
-}
+:root { --c1: SET_FROM_THEME; --c2: SET_FROM_THEME; --dark: SET_FROM_THEME; --bg: SET_FROM_THEME; --white: #ffffff; --gray: #6B7280; --light: #F3F4F6; }
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:'Inter',sans-serif; }
-
-/* ── Every page = exactly one A4 page ── */
-.page {
-  width:210mm; height:297mm;
-  overflow:hidden; position:relative;
-  page-break-before:always; break-before:page;
-}
+.page { width:210mm; height:297mm; overflow:hidden; position:relative; page-break-before:always; break-before:page; }
 .page-cover { page-break-before:avoid; break-before:avoid; }
-
-/* ── PAGE 1: COVER ── */
 .cover { background:var(--dark); }
-.cover .bg-img {
-  position:absolute; inset:0;
-  width:100%; height:100%;
-  object-fit:cover; opacity:0.35; display:block;
-}
-.cover .overlay {
-  position:absolute; inset:0;
-  background:linear-gradient(170deg, transparent 0%, var(--dark) 55%);
-}
-.cover .body {
-  position:absolute; inset:0; z-index:2;
-  display:flex; flex-direction:column;
-  justify-content:space-between;
-  padding:50px 60px 52px;
-}
+.cover .bg-img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0.35; display:block; }
+.cover .overlay { position:absolute; inset:0; background:linear-gradient(170deg, transparent 0%, var(--dark) 55%); }
+.cover .body { position:absolute; inset:0; z-index:2; display:flex; flex-direction:column; justify-content:space-between; padding:50px 60px 52px; }
 .cover-top { display:flex; justify-content:space-between; align-items:flex-start; }
-.cover-badge {
-  background:var(--c1); color:#fff;
-  padding:8px 18px; border-radius:4px;
-  font-size:10px; font-weight:700;
-  letter-spacing:3px; text-transform:uppercase;
-}
-.cover-date {
-  font-size:12px; color:rgba(255,255,255,0.62);
-  font-weight:400;
-}
+.cover-badge { background:var(--c1); color:#fff; padding:8px 18px; border-radius:4px; font-size:10px; font-weight:700; letter-spacing:3px; text-transform:uppercase; }
+.cover-date { font-size:12px; color:rgba(255,255,255,0.62); font-weight:400; }
 .cover-middle { margin-top:auto; padding-bottom:40px; }
-.cover-label {
-  font-size:11px; font-weight:600;
-  color:var(--c2); letter-spacing:2px;
-  text-transform:uppercase; margin-bottom:16px;
-}
-.cover h1 {
-  font-family:'Playfair Display',serif;
-  font-size:54px; font-weight:900; line-height:1.05;
-  color:#fff; margin-bottom:16px; max-width:680px;
-}
-.cover .tagline {
-  font-size:16px; font-weight:300;
-  color:rgba(255,255,255,0.6);
-  max-width:500px; line-height:1.75;
-}
-.cover-footer {
-  display:flex; justify-content:space-between;
-  align-items:flex-end;
-  padding-top:24px;
-  border-top:1px solid rgba(255,255,255,0.1);
-}
+.cover-label { font-size:11px; font-weight:600; color:var(--c2); letter-spacing:2px; text-transform:uppercase; margin-bottom:16px; }
+.cover h1 { font-family:'Playfair Display',serif; font-size:54px; font-weight:900; line-height:1.05; color:#fff; margin-bottom:16px; max-width:680px; }
+.cover .tagline { font-size:16px; font-weight:300; color:rgba(255,255,255,0.6); max-width:500px; line-height:1.75; }
+.cover-footer { display:flex; justify-content:space-between; align-items:flex-end; padding-top:24px; border-top:1px solid rgba(255,255,255,0.1); }
 .cover-meta-row { display:flex; gap:40px; }
 .cover-meta { font-size:11.5px; color:rgba(255,255,255,0.58); }
-.cover-meta strong {
-  display:block; color:#fff;
-  font-size:13px; font-weight:600; margin-top:4px;
-}
-.cover-score {
-  text-align:right;
-}
-.cover-score .score-num {
-  font-family:'Playfair Display',serif;
-  font-size:52px; font-weight:900;
-  color:var(--c2); line-height:1;
-}
-.cover-score .score-label {
-  font-size:10px; color:rgba(255,255,255,0.4);
-  text-transform:uppercase; letter-spacing:1px;
-}
-
-/* ── PAGE 2: PROBLEMS FOUND ── */
+.cover-meta strong { display:block; color:#fff; font-size:13px; font-weight:600; margin-top:4px; }
+.cover-score { text-align:right; }
+.cover-score .score-num { font-family:'Playfair Display',serif; font-size:52px; font-weight:900; color:var(--c2); line-height:1; }
+.cover-score .score-label { font-size:10px; color:rgba(255,255,255,0.4); text-transform:uppercase; letter-spacing:1px; }
 .page-problems { background:var(--dark); }
-.problems-header {
-  width:100%; height:38mm;
-  background:linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
-  border-bottom:1px solid rgba(255,255,255,0.07);
-  display:flex; align-items:center;
-  justify-content:space-between;
-  padding:0 52px; overflow:hidden; position:relative;
-}
-.problems-header::after {
-  content:''; position:absolute;
-  right:-30px; top:-50px;
-  width:180px; height:180px; border-radius:50%;
-  background:var(--c1); opacity:0.08;
-}
+.problems-header { width:100%; height:38mm; background:linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)); border-bottom:1px solid rgba(255,255,255,0.07); display:flex; align-items:center; justify-content:space-between; padding:0 52px; overflow:hidden; position:relative; }
+.problems-header::after { content:''; position:absolute; right:-30px; top:-50px; width:180px; height:180px; border-radius:50%; background:var(--c1); opacity:0.08; }
 .ph-left { z-index:1; }
-.section-lbl {
-  font-size:10px; font-weight:700;
-  letter-spacing:3px; text-transform:uppercase;
-  color:rgba(255,255,255,0.35); margin-bottom:8px;
-}
-.section-h { 
-  font-family:'Inter',sans-serif;
-  font-size:26px; font-weight:800; color:#fff;
-}
-.ph-num {
-  font-family:'Playfair Display',serif;
-  font-size:80px; font-weight:900;
-  color:var(--c1); opacity:0.15;
-  font-style:italic; line-height:1;
-}
+.section-lbl { font-size:10px; font-weight:700; letter-spacing:3px; text-transform:uppercase; color:rgba(255,255,255,0.35); margin-bottom:8px; }
+.section-h { font-family:'Inter',sans-serif; font-size:26px; font-weight:800; color:#fff; }
+.ph-num { font-family:'Playfair Display',serif; font-size:80px; font-weight:900; color:var(--c1); opacity:0.15; font-style:italic; line-height:1; }
 .problems-body { padding:28px 52px 28px; overflow:hidden; }
-.section-intro {
-  font-size:14px; line-height:1.75;
-  color:rgba(255,255,255,0.78);
-  margin-bottom:22px; max-width:620px;
-}
-
-/* Problem cards */
+.section-intro { font-size:14px; line-height:1.75; color:rgba(255,255,255,0.78); margin-bottom:22px; max-width:620px; }
 .prob-list { display:flex; flex-direction:column; gap:10px; margin-bottom:22px; }
-.prob-item {
-  background:rgba(255,255,255,0.04);
-  border-radius:10px; padding:16px 20px;
-  border-left:3px solid var(--c1);
-  display:flex; align-items:flex-start; gap:16px;
-}
-.prob-num {
-  font-family:'Playfair Display',serif;
-  font-size:28px; font-weight:900;
-  color:var(--c1); opacity:0.5;
-  line-height:1; flex-shrink:0;
-  min-width:30px;
-}
-.prob-content {}
-.prob-title {
-  font-size:13px; font-weight:700;
-  color:#fff; margin-bottom:5px;
-  text-transform:uppercase; letter-spacing:0.5px;
-}
-.prob-desc {
-  font-size:13px; color:rgba(255,255,255,0.76);
-  line-height:1.6; margin:0;
-}
-
-/* Impact bar */
-.impact-row {
-  background:rgba(255,255,255,0.03);
-  border-radius:8px; padding:14px 18px;
-  display:flex; align-items:center; gap:16px;
-}
-.impact-label {
-  font-size:10px; font-weight:700;
-  text-transform:uppercase; letter-spacing:1px;
-  color:rgba(255,255,255,0.35); white-space:nowrap;
-}
-.impact-bar-wrap {
-  flex:1; height:6px;
-  background:rgba(255,255,255,0.08); border-radius:3px;
-}
-.impact-bar {
-  height:100%; border-radius:3px;
-  background:linear-gradient(90deg, var(--c1), var(--c2));
-}
-.impact-val {
-  font-size:12px; font-weight:700;
-  color:var(--c2); white-space:nowrap;
-}
-
-/* ── PAGE 3: OPPORTUNITY ── */
+.prob-item { background:rgba(255,255,255,0.04); border-radius:10px; padding:16px 20px; border-left:3px solid var(--c1); display:flex; align-items:flex-start; gap:16px; }
+.prob-num { font-family:'Playfair Display',serif; font-size:28px; font-weight:900; color:var(--c1); opacity:0.5; line-height:1; flex-shrink:0; min-width:30px; }
+.prob-title { font-size:13px; font-weight:700; color:#fff; margin-bottom:5px; text-transform:uppercase; letter-spacing:0.5px; }
+.prob-desc { font-size:13px; color:rgba(255,255,255,0.76); line-height:1.6; margin:0; }
+.impact-row { background:rgba(255,255,255,0.03); border-radius:8px; padding:14px 18px; display:flex; align-items:center; gap:16px; }
+.impact-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:rgba(255,255,255,0.35); white-space:nowrap; }
+.impact-bar-wrap { flex:1; height:6px; background:rgba(255,255,255,0.08); border-radius:3px; }
+.impact-bar { height:100%; border-radius:3px; background:linear-gradient(90deg, var(--c1), var(--c2)); }
+.impact-val { font-size:12px; font-weight:700; color:var(--c2); white-space:nowrap; }
 .page-opp { background:var(--bg); display:flex; flex-direction:column; }
-.opp-photo {
-  width:100%; height:100mm;
-  position:relative; overflow:hidden; flex-shrink:0;
-}
-.opp-photo img {
-  width:100%; height:100%; object-fit:cover; display:block;
-}
-.opp-photo-overlay {
-  position:absolute; inset:0;
-  background:linear-gradient(180deg, transparent 20%, rgba(0,0,0,0.5) 100%);
-}
-.opp-photo-text {
-  position:absolute; bottom:0; left:0; right:0;
-  padding:20px 52px 24px;
-}
-.opp-photo-title {
-  font-family:'Playfair Display',serif;
-  font-size:28px; font-weight:900;
-  color:#fff; line-height:1.2;
-}
-.opp-body { 
-  flex:1; padding:24px 52px 28px; 
-  overflow:hidden; background:var(--bg);
-}
-
-/* Opportunity stats */
+.opp-photo { width:100%; height:100mm; position:relative; overflow:hidden; flex-shrink:0; }
+.opp-photo img { width:100%; height:100%; object-fit:cover; display:block; }
+.opp-photo-overlay { position:absolute; inset:0; background:linear-gradient(180deg, transparent 20%, rgba(0,0,0,0.5) 100%); }
+.opp-photo-text { position:absolute; bottom:0; left:0; right:0; padding:20px 52px 24px; }
+.opp-photo-title { font-family:'Playfair Display',serif; font-size:28px; font-weight:900; color:#fff; line-height:1.2; }
+.opp-body { flex:1; padding:24px 52px 28px; overflow:hidden; background:var(--bg); }
 .opp-stats { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:18px; }
-.opp-stat {
-  background:var(--white); border-radius:10px;
-  padding:16px 14px; text-align:center;
-  border-top:3px solid var(--c1);
-  box-shadow:0 1px 6px rgba(0,0,0,0.07);
-}
-.opp-stat-num {
-  font-family:'Playfair Display',serif;
-  font-size:36px; font-weight:900;
-  color:var(--c1); line-height:1;
-}
-.opp-stat-label {
-  font-size:9px; color:var(--gray);
-  margin-top:5px; text-transform:uppercase;
-  letter-spacing:1px;
-}
-
-/* Comparison table */
-.comp-table-wrap {
-  border-radius:9px; overflow:hidden;
-  box-shadow:0 2px 10px rgba(0,0,0,0.08);
-}
+.opp-stat { background:var(--white); border-radius:10px; padding:16px 14px; text-align:center; border-top:3px solid var(--c1); box-shadow:0 1px 6px rgba(0,0,0,0.07); }
+.opp-stat-num { font-family:'Playfair Display',serif; font-size:36px; font-weight:900; color:var(--c1); line-height:1; }
+.opp-stat-label { font-size:9px; color:var(--gray); margin-top:5px; text-transform:uppercase; letter-spacing:1px; }
+.comp-table-wrap { border-radius:9px; overflow:hidden; box-shadow:0 2px 10px rgba(0,0,0,0.08); }
 .comp-table { width:100%; border-collapse:collapse; background:var(--white); }
 .comp-table thead { background:var(--dark); }
-.comp-table thead th {
-  padding:10px 14px; text-align:left;
-  font-size:10px; font-weight:700;
-  letter-spacing:1.5px; text-transform:uppercase; color:#fff;
-}
+.comp-table thead th { padding:10px 14px; text-align:left; font-size:10px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#fff; }
 .comp-table tbody tr:nth-child(even) { background:var(--light); }
-.comp-table tbody td {
-  padding:9px 14px; font-size:12px;
-  color:#374151; border-bottom:1px solid #E5E7EB;
-  line-height:1.4;
-}
+.comp-table tbody td { padding:9px 14px; font-size:12px; color:#374151; border-bottom:1px solid #E5E7EB; line-height:1.4; }
 .comp-table tbody tr:last-child td { border-bottom:none; }
-
-/* ── PAGE 4: SOLUTION + CTA ── */
 .page-solution { background:var(--dark); }
-.solution-header {
-  width:100%; height:38mm;
-  background:linear-gradient(135deg, rgba(255,255,255,0.03), transparent);
-  border-bottom:1px solid rgba(255,255,255,0.07);
-  display:flex; align-items:center;
-  justify-content:space-between; padding:0 52px;
-  position:relative; overflow:hidden;
-}
-.solution-header::before {
-  content:''; position:absolute;
-  left:-30px; bottom:-40px;
-  width:160px; height:160px; border-radius:50%;
-  background:var(--c2); opacity:0.06;
-}
+.solution-header { width:100%; height:38mm; background:linear-gradient(135deg, rgba(255,255,255,0.03), transparent); border-bottom:1px solid rgba(255,255,255,0.07); display:flex; align-items:center; justify-content:space-between; padding:0 52px; position:relative; overflow:hidden; }
+.solution-header::before { content:''; position:absolute; left:-30px; bottom:-40px; width:160px; height:160px; border-radius:50%; background:var(--c2); opacity:0.06; }
 .solution-body { padding:28px 52px 28px; overflow:hidden; }
-
-/* Service cards */
-.service-grid {
-  display:grid; grid-template-columns:1fr 1fr;
-  gap:10px; margin-bottom:18px;
-}
-.service-card {
-  background:rgba(255,255,255,0.05);
-  border-radius:10px; padding:16px 18px;
-  border-top:2px solid var(--c1);
-}
-.service-card h3 {
-  font-size:12px; font-weight:700;
-  color:#fff; margin-bottom:6px;
-  text-transform:uppercase; letter-spacing:0.5px;
-}
-.service-card p {
-  font-size:12.5px; color:rgba(255,255,255,0.76);
-  line-height:1.6; margin:0;
-}
-
-/* Timeline */
+.service-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:18px; }
+.service-card { background:rgba(255,255,255,0.05); border-radius:10px; padding:16px 18px; border-top:2px solid var(--c1); }
+.service-card h3 { font-size:12px; font-weight:700; color:#fff; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px; }
+.service-card p { font-size:12.5px; color:rgba(255,255,255,0.76); line-height:1.6; margin:0; }
 .timeline { margin-bottom:18px; }
-.timeline-title {
-  font-size:10px; font-weight:700;
-  color:rgba(255,255,255,0.35);
-  text-transform:uppercase; letter-spacing:2px;
-  margin-bottom:12px;
-}
-.timeline-row {
-  display:flex; gap:0; margin-bottom:8px;
-}
-.timeline-step {
-  flex:1; background:rgba(255,255,255,0.04);
-  padding:10px 14px; position:relative;
-}
+.timeline-title { font-size:10px; font-weight:700; color:rgba(255,255,255,0.35); text-transform:uppercase; letter-spacing:2px; margin-bottom:12px; }
+.timeline-row { display:flex; gap:0; margin-bottom:8px; }
+.timeline-step { flex:1; background:rgba(255,255,255,0.04); padding:10px 14px; position:relative; }
 .timeline-step:first-child { border-radius:8px 0 0 8px; }
 .timeline-step:last-child { border-radius:0 8px 8px 0; }
 .timeline-step + .timeline-step { border-left:1px solid rgba(255,255,255,0.06); }
-.step-num {
-  font-size:9px; color:var(--c2);
-  font-weight:700; margin-bottom:4px;
-}
-.step-label {
-  font-size:12px; color:rgba(255,255,255,0.82);
-  font-weight:500; line-height:1.4;
-}
-
-/* CTA box */
-.cta-box {
-  background:linear-gradient(135deg, var(--c1), var(--c2));
-  border-radius:12px; padding:22px 28px;
-  display:flex; align-items:center;
-  justify-content:space-between; gap:24px;
-}
-.cta-left {}
-.cta-heading {
-  font-family:'Playfair Display',serif;
-  font-size:20px; font-weight:900;
-  color:#fff; margin-bottom:6px;
-}
-.cta-sub {
-  font-size:12px; color:rgba(255,255,255,0.8);
-  line-height:1.6; margin:0;
-}
+.step-num { font-size:9px; color:var(--c2); font-weight:700; margin-bottom:4px; }
+.step-label { font-size:12px; color:rgba(255,255,255,0.82); font-weight:500; line-height:1.4; }
+.cta-box { background:linear-gradient(135deg, var(--c1), var(--c2)); border-radius:12px; padding:22px 28px; display:flex; align-items:center; justify-content:space-between; gap:24px; }
+.cta-heading { font-family:'Playfair Display',serif; font-size:20px; font-weight:900; color:#fff; margin-bottom:6px; }
+.cta-sub { font-size:12px; color:rgba(255,255,255,0.8); line-height:1.6; margin:0; }
 .cta-right { flex-shrink:0; text-align:right; }
-.cta-contact {
-  font-size:11px; color:rgba(255,255,255,0.6);
-  margin-bottom:4px;
-}
-.cta-contact strong {
-  display:block; color:#fff;
-  font-size:14px; font-weight:700; margin-top:2px;
-}
+.cta-contact { font-size:11px; color:rgba(255,255,255,0.6); margin-bottom:4px; }
+.cta-contact strong { display:block; color:#fff; font-size:14px; font-weight:700; margin-top:2px; }
 </style>
 </head>
 <body>
-
-<!-- ═══════════════════════════
-     PAGE 1: COVER
-═══════════════════════════ -->
 <div class="page page-cover cover">
 [IMG:professional business industry photo matching the target business sector]
 <div class="overlay"></div>
 <div class="body">
-  <div class="cover-top">
-    <div class="cover-badge">Growth Audit Report</div>
-    <div class="cover-date">Prepared: Copy current period from brief</div>
-  </div>
-  <div class="cover-middle">
-    <div class="cover-label">Confidential — Prepared For</div>
-    <h1>Copy the TARGET BUSINESS NAME or INDUSTRY from brief</h1>
-    <p class="tagline">Copy TAGLINE from brief exactly here.</p>
-  </div>
-  <div class="cover-footer">
-    <div class="cover-meta-row">
-      <div class="cover-meta">Prepared By <strong>Copy SERVICE PROVIDER from brief</strong></div>
-      <div class="cover-meta">Service <strong>Copy main service offered from brief</strong></div>
-      <div class="cover-meta">Report Type <strong>Growth Opportunity Audit</strong></div>
-    </div>
-    <div class="cover-score">
-      <div class="score-num">Copy SCORE from brief</div>
-      <div class="score-label">Opportunity Score</div>
-    </div>
-  </div>
+  <div class="cover-top"><div class="cover-badge">Growth Audit Report</div><div class="cover-date">Prepared: Copy current period from brief</div></div>
+  <div class="cover-middle"><div class="cover-label">Confidential — Prepared For</div><h1>Copy the TARGET BUSINESS NAME or INDUSTRY from brief</h1><p class="tagline">Copy TAGLINE from brief exactly here.</p></div>
+  <div class="cover-footer"><div class="cover-meta-row"><div class="cover-meta">Prepared By <strong>Copy SERVICE PROVIDER from brief</strong></div><div class="cover-meta">Service <strong>Copy main service offered from brief</strong></div><div class="cover-meta">Report Type <strong>Growth Opportunity Audit</strong></div></div><div class="cover-score"><div class="score-num">Copy SCORE from brief</div><div class="score-label">Opportunity Score</div></div></div>
 </div>
 </div>
-
-<!-- ═══════════════════════════
-     PAGE 2: PROBLEMS FOUND
-═══════════════════════════ -->
-<div class="page page-problems">
-<div class="problems-header">
-  <div class="ph-left">
-    <div class="section-lbl">02 / Analysis</div>
-    <div class="section-h">Problems We Identified</div>
-  </div>
-  <div class="ph-num">02</div>
-</div>
-<div class="problems-body">
-  <p class="section-intro">Copy SUMMARY sentence 1 and 2 from Problems section of brief.</p>
-  <div class="prob-list">
-    <div class="prob-item">
-      <div class="prob-num">01</div>
-      <div class="prob-content">
-        <div class="prob-title">Copy PROBLEM 1 TITLE from brief</div>
-        <p class="prob-desc">Copy PROBLEM 1 DETAIL from brief — 2 sentences max.</p>
-      </div>
-    </div>
-    <div class="prob-item">
-      <div class="prob-num">02</div>
-      <div class="prob-content">
-        <div class="prob-title">Copy PROBLEM 2 TITLE from brief</div>
-        <p class="prob-desc">Copy PROBLEM 2 DETAIL from brief — 2 sentences max.</p>
-      </div>
-    </div>
-    <div class="prob-item">
-      <div class="prob-num">03</div>
-      <div class="prob-content">
-        <div class="prob-title">Copy PROBLEM 3 TITLE from brief</div>
-        <p class="prob-desc">Copy PROBLEM 3 DETAIL from brief — 2 sentences max.</p>
-      </div>
-    </div>
-    <div class="prob-item">
-      <div class="prob-num">04</div>
-      <div class="prob-content">
-        <div class="prob-title">Copy PROBLEM 4 TITLE from brief</div>
-        <p class="prob-desc">Copy PROBLEM 4 DETAIL from brief — 2 sentences max.</p>
-      </div>
-    </div>
-  </div>
-  <div class="impact-row">
-    <div class="impact-label">Overall Impact Risk</div>
-    <div class="impact-bar-wrap">
-      <div class="impact-bar" style="width:IMPACT_PERCENT%;"></div>
-    </div>
-    <div class="impact-val">IMPACT_PERCENT% Revenue at Risk</div>
-  </div>
-</div>
-</div>
-
-<!-- ═══════════════════════════
-     PAGE 3: OPPORTUNITY
-═══════════════════════════ -->
-<div class="page page-opp">
-<div class="opp-photo">
-[IMG:business growth success professional team working results opportunity]
-<div class="opp-photo-overlay"></div>
-<div class="opp-photo-text">
-  <div class="opp-photo-title">Copy OPPORTUNITY HEADLINE from brief</div>
-</div>
-</div>
-<div class="opp-body">
-  <p class="section-intro" style="color:#374151;margin-bottom:16px;">Copy OPPORTUNITY SUMMARY sentence 1 and 2 from brief.</p>
-  <div class="opp-stats">
-    <div class="opp-stat">
-      <div class="opp-stat-num">Copy STAT 1 VALUE</div>
-      <div class="opp-stat-label">Copy STAT 1 LABEL</div>
-    </div>
-    <div class="opp-stat">
-      <div class="opp-stat-num">Copy STAT 2 VALUE</div>
-      <div class="opp-stat-label">Copy STAT 2 LABEL</div>
-    </div>
-    <div class="opp-stat">
-      <div class="opp-stat-num">Copy STAT 3 VALUE</div>
-      <div class="opp-stat-label">Copy STAT 3 LABEL</div>
-    </div>
-  </div>
-  <div class="comp-table-wrap">
-    <table class="comp-table">
-      <thead>
-        <tr><th>Copy COL1 from brief</th><th>Copy COL2 from brief</th><th>Copy COL3 from brief</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>ROW1 val1</td><td>ROW1 val2</td><td>ROW1 val3</td></tr>
-        <tr><td>ROW2 val1</td><td>ROW2 val2</td><td>ROW2 val3</td></tr>
-        <tr><td>ROW3 val1</td><td>ROW3 val2</td><td>ROW3 val3</td></tr>
-        <tr><td>ROW4 val1</td><td>ROW4 val2</td><td>ROW4 val3</td></tr>
-      </tbody>
-    </table>
-  </div>
-</div>
-</div>
-
-<!-- ═══════════════════════════
-     PAGE 4: SOLUTION + CTA
-═══════════════════════════ -->
-<div class="page page-solution">
-<div class="solution-header">
-  <div class="ph-left">
-    <div class="section-lbl">04 / Solution</div>
-    <div class="section-h">How We Fix This</div>
-  </div>
-  <div class="ph-num">04</div>
-</div>
-<div class="solution-body">
-  <p class="section-intro">Copy SOLUTION SUMMARY sentence 1 and 2 from brief.</p>
-  <div class="service-grid">
-    <div class="service-card">
-      <h3>Copy SERVICE 1 TITLE from brief</h3>
-      <p>Copy SERVICE 1 DETAIL from brief — 2 sentences.</p>
-    </div>
-    <div class="service-card">
-      <h3>Copy SERVICE 2 TITLE from brief</h3>
-      <p>Copy SERVICE 2 DETAIL from brief — 2 sentences.</p>
-    </div>
-    <div class="service-card">
-      <h3>Copy SERVICE 3 TITLE from brief</h3>
-      <p>Copy SERVICE 3 DETAIL from brief — 2 sentences.</p>
-    </div>
-    <div class="service-card">
-      <h3>Copy SERVICE 4 TITLE from brief</h3>
-      <p>Copy SERVICE 4 DETAIL from brief — 2 sentences.</p>
-    </div>
-  </div>
-  <div class="timeline">
-    <div class="timeline-title">Implementation Timeline</div>
-    <div class="timeline-row">
-      <div class="timeline-step">
-        <div class="step-num">WEEK 1</div>
-        <div class="step-label">Copy STEP 1 from brief</div>
-      </div>
-      <div class="timeline-step">
-        <div class="step-num">WEEK 2-3</div>
-        <div class="step-label">Copy STEP 2 from brief</div>
-      </div>
-      <div class="timeline-step">
-        <div class="step-num">WEEK 4</div>
-        <div class="step-label">Copy STEP 3 from brief</div>
-      </div>
-      <div class="timeline-step">
-        <div class="step-num">ONGOING</div>
-        <div class="step-label">Copy STEP 4 from brief</div>
-      </div>
-    </div>
-  </div>
-  <div class="cta-box">
-    <div class="cta-left">
-      <div class="cta-heading">Copy CTA HEADING from brief</div>
-      <p class="cta-sub">Copy CTA DESCRIPTION from brief — 2 sentences max.</p>
-    </div>
-    <div class="cta-right">
-      <div class="cta-contact">Contact Us
-        <strong>Copy CONTACT from brief</strong>
-      </div>
-    </div>
-  </div>
-</div>
-</div>
-
+<div class="page page-problems"><div class="problems-header"><div class="ph-left"><div class="section-lbl">02 / Analysis</div><div class="section-h">Problems We Identified</div></div><div class="ph-num">02</div></div><div class="problems-body"><p class="section-intro">Copy SUMMARY sentence 1 and 2 from Problems section of brief.</p><div class="prob-list"><div class="prob-item"><div class="prob-num">01</div><div class="prob-content"><div class="prob-title">Copy PROBLEM 1 TITLE from brief</div><p class="prob-desc">Copy PROBLEM 1 DETAIL from brief — 2 sentences max.</p></div></div><div class="prob-item"><div class="prob-num">02</div><div class="prob-content"><div class="prob-title">Copy PROBLEM 2 TITLE from brief</div><p class="prob-desc">Copy PROBLEM 2 DETAIL from brief — 2 sentences max.</p></div></div><div class="prob-item"><div class="prob-num">03</div><div class="prob-content"><div class="prob-title">Copy PROBLEM 3 TITLE from brief</div><p class="prob-desc">Copy PROBLEM 3 DETAIL from brief — 2 sentences max.</p></div></div><div class="prob-item"><div class="prob-num">04</div><div class="prob-content"><div class="prob-title">Copy PROBLEM 4 TITLE from brief</div><p class="prob-desc">Copy PROBLEM 4 DETAIL from brief — 2 sentences max.</p></div></div></div><div class="impact-row"><div class="impact-label">Overall Impact Risk</div><div class="impact-bar-wrap"><div class="impact-bar" style="width:IMPACT_PERCENT%;"></div></div><div class="impact-val">IMPACT_PERCENT% Revenue at Risk</div></div></div></div>
+<div class="page page-opp"><div class="opp-photo">[IMG:business growth success professional team working results opportunity]<div class="opp-photo-overlay"></div><div class="opp-photo-text"><div class="opp-photo-title">Copy OPPORTUNITY HEADLINE from brief</div></div></div><div class="opp-body"><p class="section-intro" style="color:#374151;margin-bottom:16px;">Copy OPPORTUNITY SUMMARY sentence 1 and 2 from brief.</p><div class="opp-stats"><div class="opp-stat"><div class="opp-stat-num">Copy STAT 1 VALUE</div><div class="opp-stat-label">Copy STAT 1 LABEL</div></div><div class="opp-stat"><div class="opp-stat-num">Copy STAT 2 VALUE</div><div class="opp-stat-label">Copy STAT 2 LABEL</div></div><div class="opp-stat"><div class="opp-stat-num">Copy STAT 3 VALUE</div><div class="opp-stat-label">Copy STAT 3 LABEL</div></div></div><div class="comp-table-wrap"><table class="comp-table"><thead><tr><th>Copy COL1 from brief</th><th>Copy COL2 from brief</th><th>Copy COL3 from brief</th></tr></thead><tbody><tr><td>ROW1 val1</td><td>ROW1 val2</td><td>ROW1 val3</td></tr><tr><td>ROW2 val1</td><td>ROW2 val2</td><td>ROW2 val3</td></tr><tr><td>ROW3 val1</td><td>ROW3 val2</td><td>ROW3 val3</td></tr><tr><td>ROW4 val1</td><td>ROW4 val2</td><td>ROW4 val3</td></tr></tbody></table></div></div></div>
+<div class="page page-solution"><div class="solution-header"><div class="ph-left"><div class="section-lbl">04 / Solution</div><div class="section-h">How We Fix This</div></div><div class="ph-num">04</div></div><div class="solution-body"><p class="section-intro">Copy SOLUTION SUMMARY sentence 1 and 2 from brief.</p><div class="service-grid"><div class="service-card"><h3>Copy SERVICE 1 TITLE from brief</h3><p>Copy SERVICE 1 DETAIL from brief — 2 sentences.</p></div><div class="service-card"><h3>Copy SERVICE 2 TITLE from brief</h3><p>Copy SERVICE 2 DETAIL from brief — 2 sentences.</p></div><div class="service-card"><h3>Copy SERVICE 3 TITLE from brief</h3><p>Copy SERVICE 3 DETAIL from brief — 2 sentences.</p></div><div class="service-card"><h3>Copy SERVICE 4 TITLE from brief</h3><p>Copy SERVICE 4 DETAIL from brief — 2 sentences.</p></div></div><div class="timeline"><div class="timeline-title">Implementation Timeline</div><div class="timeline-row"><div class="timeline-step"><div class="step-num">WEEK 1</div><div class="step-label">Copy STEP 1 from brief</div></div><div class="timeline-step"><div class="step-num">WEEK 2-3</div><div class="step-label">Copy STEP 2 from brief</div></div><div class="timeline-step"><div class="step-num">WEEK 4</div><div class="step-label">Copy STEP 3 from brief</div></div><div class="timeline-step"><div class="step-num">ONGOING</div><div class="step-label">Copy STEP 4 from brief</div></div></div></div><div class="cta-box"><div class="cta-left"><div class="cta-heading">Copy CTA HEADING from brief</div><p class="cta-sub">Copy CTA DESCRIPTION from brief — 2 sentences max.</p></div><div class="cta-right"><div class="cta-contact">Contact Us<strong>Copy CONTACT from brief</strong></div></div></div></div></div>
 </body>
 </html>
 
@@ -1297,23 +1105,14 @@ ${brief}
 `;
 }
 
-// ─────────────────────────────────────────────
-// GENERATE HTML HELPER
-// ─────────────────────────────────────────────
 async function generateHtmlFromBrief(brief) {
   const prompt = buildHtmlPrompt(brief);
-
-  // Audit HTML is large. Keep token room high enough for full 4-page output.
   let html = await callGemini(prompt, 50000, 0.5);
-
   html = cleanHtml(html);
 
   const pageCount = (html.match(/class="page/g) || []).length;
-
   if (pageCount < 4) {
-    throw new Error(
-      `Generated HTML looks incomplete. Only ${pageCount} page sections found. Expected at least 4.`
-    );
+    throw new Error(`Generated HTML looks incomplete. Only ${pageCount} page sections found. Expected at least 4.`);
   }
 
   if (!html.includes("</html>")) {
@@ -1325,8 +1124,6 @@ async function generateHtmlFromBrief(brief) {
 
 // ─────────────────────────────────────────────
 // ROUTE 3 — GENERATE HTML FROM BRIEF
-// POST /generate-html
-// Body: { "brief": "..." }
 // ─────────────────────────────────────────────
 app.post("/generate-html", async (req, res) => {
   try {
@@ -1335,15 +1132,12 @@ app.post("/generate-html", async (req, res) => {
     if (!brief || typeof brief !== "string") {
       return res.status(400).json({
         success: false,
-        error:
-          "Missing brief. Send JSON like: { brief: 'your research brief here' }"
+        error: "Missing brief. Send JSON like: { brief: 'your research brief here' }"
       });
     }
 
     console.log("🎨 Generating HTML...");
-
     const html = await generateHtmlFromBrief(brief);
-
     console.log("✅ HTML generated:", html.length, "chars");
 
     return res.json({
@@ -1362,10 +1156,7 @@ app.post("/generate-html", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ROUTE 4 — FULL PIPELINE
-// Raw notes → Brief → HTML → Images → PDF URL
-// POST /generate-report-pdf
-// Body: { "raw_notes": "..." }
+// ROUTE 4 — FULL PDF PIPELINE
 // ─────────────────────────────────────────────
 app.post("/generate-report-pdf", async (req, res) => {
   try {
@@ -1374,22 +1165,13 @@ app.post("/generate-report-pdf", async (req, res) => {
     if (!raw_notes || typeof raw_notes !== "string") {
       return res.status(400).json({
         success: false,
-        error:
-          "Missing raw_notes. Send JSON like: { raw_notes: 'your topic here' }"
+        error: "Missing raw_notes. Send JSON like: { raw_notes: 'your topic here' }"
       });
     }
 
     console.log("\n=== FULL PDF PIPELINE START ===");
-
-    console.log("Step 1: Generating research brief...");
     const brief = await generateBriefFromNotes(raw_notes);
-    console.log("✅ Brief done:", brief.length, "chars");
-
-    console.log("Step 2: Generating HTML...");
     const html = await generateHtmlFromBrief(brief);
-    console.log("✅ HTML done:", html.length, "chars");
-
-    console.log("Step 3: Generating PDF...");
     const url = await createPdfFromHtml(html, req);
 
     console.log("🎉 FULL PIPELINE COMPLETE:", url);
@@ -1411,7 +1193,6 @@ app.post("/generate-report-pdf", async (req, res) => {
 
 // ─────────────────────────────────────────────
 // SIMPLE HTML → READABLE TEXT CLEANER
-// Used for website analysis
 // ─────────────────────────────────────────────
 function extractReadableTextFromHtml(html) {
   if (!html || typeof html !== "string") return "";
@@ -1433,13 +1214,6 @@ function extractReadableTextFromHtml(html) {
 
 // ─────────────────────────────────────────────
 // ROUTE 5 — ANALYZE A LEAD
-// Supports:
-// - website available
-// - no website
-// - Instagram only
-// - Google Maps only
-// - phone/manual notes
-// POST /analyze-lead
 // ─────────────────────────────────────────────
 app.post("/analyze-lead", async (req, res) => {
   try {
@@ -1467,18 +1241,11 @@ app.post("/analyze-lead", async (req, res) => {
       });
     }
 
-    const hasAnyContext =
-      website ||
-      google_maps_url ||
-      instagram_url ||
-      phone ||
-      notes;
-
+    const hasAnyContext = website || google_maps_url || instagram_url || phone || notes;
     if (!hasAnyContext) {
       return res.status(400).json({
         success: false,
-        error:
-          "Provide at least one of: website, google_maps_url, instagram_url, phone, or notes"
+        error: "Provide at least one of: website, google_maps_url, instagram_url, phone, or notes"
       });
     }
 
@@ -1489,29 +1256,20 @@ app.post("/analyze-lead", async (req, res) => {
 
     if (website && typeof website === "string") {
       try {
-        console.log(`🌐 Fetching website: ${website}`);
-
         const siteResponse = await axios.get(website, {
           timeout: 15000,
           headers: {
-            "User-Agent":
-              "Mozilla/5.0 (compatible; LeadResearchBot/1.0)"
+            "User-Agent": "Mozilla/5.0 (compatible; LeadResearchBot/1.0)"
           }
         });
 
         websiteText = extractReadableTextFromHtml(siteResponse.data);
-
-        if (!websiteText || websiteText.length < 120) {
-          websiteFetchStatus =
-            "Website loaded, but readable content was limited.";
-        } else {
-          websiteFetchStatus =
-            "Website content extracted successfully.";
-        }
+        websiteFetchStatus = websiteText && websiteText.length >= 120
+          ? "Website content extracted successfully."
+          : "Website loaded, but readable content was limited.";
       } catch (siteError) {
         console.log("⚠️ Website fetch failed:", siteError.message);
-        websiteFetchStatus =
-          "Website was provided but could not be fetched automatically.";
+        websiteFetchStatus = "Website was provided but could not be fetched automatically.";
       }
     }
 
@@ -1540,7 +1298,6 @@ ${websiteText || "No readable website text available."}
 Return ONLY valid JSON. No markdown. No explanations outside JSON.
 
 Use this exact structure:
-
 {
   "business_name": "",
   "website": "",
@@ -1548,31 +1305,12 @@ Use this exact structure:
   "lead_score": 0,
   "lead_quality": "Low | Medium | High",
   "one_line_opportunity": "",
-  "visible_strengths": [
-    "",
-    ""
-  ],
+  "visible_strengths": ["", ""],
   "problems_found": [
-    {
-      "title": "",
-      "detail": "",
-      "severity": "Low | Medium | High"
-    },
-    {
-      "title": "",
-      "detail": "",
-      "severity": "Low | Medium | High"
-    },
-    {
-      "title": "",
-      "detail": "",
-      "severity": "Low | Medium | High"
-    },
-    {
-      "title": "",
-      "detail": "",
-      "severity": "Low | Medium | High"
-    }
+    { "title": "", "detail": "", "severity": "Low | Medium | High" },
+    { "title": "", "detail": "", "severity": "Low | Medium | High" },
+    { "title": "", "detail": "", "severity": "Low | Medium | High" },
+    { "title": "", "detail": "", "severity": "Low | Medium | High" }
   ],
   "why_they_may_need_this_service": "",
   "personalization_angle": "",
@@ -1592,25 +1330,13 @@ Rules:
 - If website/contact email is clearly available in provided data, Email may be used.
 - If no usable contact channel is provided, return "Unknown".
 - audit_pdf_raw_notes must be a strong paragraph that can directly generate a 4-page audit PDF.
-- The audit notes should include:
-  business name,
-  available online presence,
-  whether they lack a website,
-  key problems,
-  growth opportunity,
-  and the service offered.
 `;
 
     const geminiText = await callGemini(prompt, 8192, 0.4);
 
     let analysis;
-
     try {
-      const cleaned = geminiText
-        .replace(/```json\s*/gi, "")
-        .replace(/```\s*/gi, "")
-        .trim();
-
+      const cleaned = geminiText.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
       analysis = JSON.parse(cleaned);
     } catch (parseError) {
       return res.status(500).json({
@@ -1638,46 +1364,23 @@ Rules:
 
 // ─────────────────────────────────────────────
 // ROUTE 6 — GENERATE OUTREACH + AUDIT PDF
-// POST /generate-outreach
 // ─────────────────────────────────────────────
 app.post("/generate-outreach", async (req, res) => {
   try {
-    const {
-      analysis,
-      sender_name,
-      sender_business,
-      sender_service
-    } = req.body;
+    const { analysis, sender_name, sender_business, sender_service } = req.body;
 
     if (!analysis || typeof analysis !== "object") {
-      return res.status(400).json({
-        success: false,
-        error: "analysis object is required"
-      });
+      return res.status(400).json({ success: false, error: "analysis object is required" });
     }
-
     if (!sender_name || typeof sender_name !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "sender_name is required"
-      });
+      return res.status(400).json({ success: false, error: "sender_name is required" });
     }
-
     if (!sender_business || typeof sender_business !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "sender_business is required"
-      });
+      return res.status(400).json({ success: false, error: "sender_business is required" });
     }
-
     if (!sender_service || typeof sender_service !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "sender_service is required"
-      });
+      return res.status(400).json({ success: false, error: "sender_service is required" });
     }
-
-    console.log(`✉️ Generating outreach for: ${analysis.business_name}`);
 
     const outreachPrompt = `
 You are an expert B2B cold email copywriter.
@@ -1695,7 +1398,6 @@ Service Offered: ${sender_service}
 Return ONLY valid JSON. No markdown. No explanation.
 
 Use exactly this structure:
-
 {
   "subject": "",
   "opening_line": "",
@@ -1717,13 +1419,8 @@ Rules:
     const outreachText = await callGemini(outreachPrompt, 4096, 0.5);
 
     let outreach;
-
     try {
-      const cleaned = outreachText
-        .replace(/```json\s*/gi, "")
-        .replace(/```\s*/gi, "")
-        .trim();
-
+      const cleaned = outreachText.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
       outreach = JSON.parse(cleaned);
     } catch (parseError) {
       return res.status(500).json({
@@ -1734,7 +1431,6 @@ Rules:
     }
 
     const auditNotes = analysis.audit_pdf_raw_notes;
-
     if (!auditNotes || typeof auditNotes !== "string") {
       return res.status(400).json({
         success: false,
@@ -1742,13 +1438,9 @@ Rules:
       });
     }
 
-    console.log("📄 Generating personalized audit PDF...");
-
     const brief = await generateBriefFromNotes(auditNotes);
     const html = await generateHtmlFromBrief(brief);
     const pdfUrl = await createPdfFromHtml(html, req);
-
-    console.log("✅ Outreach + PDF complete");
 
     return res.json({
       success: true,
@@ -1767,73 +1459,49 @@ Rules:
 });
 
 // ─────────────────────────────────────────────
-// ROUTE 7 — PROCESS ONE LEAD FULLY
-// Analyze lead → Generate outreach → Generate PDF
-// Works with or without a website
-// POST /process-lead
+// ROUTE 7 — PROCESS ONE LEAD FULLY + SAVE TO SUPABASE
 // ─────────────────────────────────────────────
 app.post("/process-lead", async (req, res) => {
   try {
     const {
+      lead_id,
+      campaign_id,
       business_name,
       website,
       google_maps_url,
       instagram_url,
       phone,
+      email,
+      address,
       notes,
+      source,
       service_offered,
       sender_name,
       sender_business
     } = req.body;
 
     if (!business_name || typeof business_name !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "business_name is required"
-      });
+      return res.status(400).json({ success: false, error: "business_name is required" });
     }
-
     if (!service_offered || typeof service_offered !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "service_offered is required"
-      });
+      return res.status(400).json({ success: false, error: "service_offered is required" });
     }
-
     if (!sender_name || typeof sender_name !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "sender_name is required"
-      });
+      return res.status(400).json({ success: false, error: "sender_name is required" });
     }
-
     if (!sender_business || typeof sender_business !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "sender_business is required"
-      });
+      return res.status(400).json({ success: false, error: "sender_business is required" });
     }
 
-    const hasAnyContext =
-      website ||
-      google_maps_url ||
-      instagram_url ||
-      phone ||
-      notes;
-
+    const hasAnyContext = website || google_maps_url || instagram_url || phone || email || address || notes;
     if (!hasAnyContext) {
       return res.status(400).json({
         success: false,
-        error:
-          "Provide at least one of: website, google_maps_url, instagram_url, phone, or notes"
+        error: "Provide at least one of: website, google_maps_url, instagram_url, phone, email, address, or notes"
       });
     }
 
-    console.log(`\n=== PROCESSING FULL LEAD: ${business_name} ===`);
-
     const baseUrl = `${req.protocol}://${req.get("host")}`;
-
-    console.log("Step 1: Analyzing lead...");
 
     const analyzeRes = await axios.post(
       `${baseUrl}/analyze-lead`,
@@ -1849,15 +1517,7 @@ app.post("/process-lead", async (req, res) => {
       { timeout: 180000 }
     );
 
-    if (!analyzeRes.data.success) {
-      throw new Error("Lead analysis failed");
-    }
-
     const analysis = analyzeRes.data.analysis;
-
-    console.log("✅ Lead analysis complete");
-
-    console.log("Step 2: Generating outreach + PDF...");
 
     const outreachRes = await axios.post(
       `${baseUrl}/generate-outreach`,
@@ -1870,11 +1530,27 @@ app.post("/process-lead", async (req, res) => {
       { timeout: 300000 }
     );
 
-    if (!outreachRes.data.success) {
-      throw new Error("Outreach generation failed");
-    }
+    const outreach = outreachRes.data.outreach;
+    const pdfUrl = outreachRes.data.pdf_url;
 
-    console.log("🎉 Full lead processing complete");
+    const persistence = await saveLeadProcessingToSupabase({
+      leadId: lead_id,
+      campaignId: campaign_id,
+      leadPayload: {
+        business_name,
+        website,
+        google_maps_url,
+        instagram_url,
+        phone,
+        email,
+        address,
+        notes,
+        source
+      },
+      analysis,
+      outreach,
+      pdfUrl
+    });
 
     return res.json({
       success: true,
@@ -1883,11 +1559,14 @@ app.post("/process-lead", async (req, res) => {
         website: website || "",
         google_maps_url: google_maps_url || "",
         instagram_url: instagram_url || "",
-        phone: phone || ""
+        phone: phone || "",
+        email: email || "",
+        address: address || ""
       },
       analysis,
-      outreach: outreachRes.data.outreach,
-      pdf_url: outreachRes.data.pdf_url
+      outreach,
+      pdf_url: pdfUrl,
+      database: persistence
     });
 
   } catch (error) {
@@ -1902,141 +1581,59 @@ app.post("/process-lead", async (req, res) => {
 
 // ─────────────────────────────────────────────
 // ROUTE 8 — PROCESS MULTIPLE LEADS
-// Max 3 leads per request for stability
-// POST /process-leads
 // ─────────────────────────────────────────────
 app.post("/process-leads", async (req, res) => {
   try {
-    const {
-      leads,
-      service_offered,
-      sender_name,
-      sender_business
-    } = req.body;
+    const { leads, campaign_id, service_offered, sender_name, sender_business } = req.body;
 
     if (!Array.isArray(leads) || leads.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "leads must be a non-empty array"
-      });
+      return res.status(400).json({ success: false, error: "leads must be a non-empty array" });
     }
-
     if (leads.length > 3) {
-      return res.status(400).json({
-        success: false,
-        error: "Maximum 3 leads allowed per request for now"
-      });
-    }
-
-    if (!service_offered || typeof service_offered !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "service_offered is required"
-      });
-    }
-
-    if (!sender_name || typeof sender_name !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "sender_name is required"
-      });
-    }
-
-    if (!sender_business || typeof sender_business !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "sender_business is required"
-      });
+      return res.status(400).json({ success: false, error: "Maximum 3 leads allowed per request for now" });
     }
 
     const baseUrl = `${req.protocol}://${req.get("host")}`;
     const results = [];
 
-    console.log(`\n=== PROCESSING ${leads.length} LEADS ===`);
-
-    for (let i = 0; i < leads.length; i++) {
-      const lead = leads[i];
-
-      const business_name = lead.business_name;
-      const website = lead.website || "";
-      const google_maps_url = lead.google_maps_url || "";
-      const instagram_url = lead.instagram_url || "";
-      const phone = lead.phone || "";
-      const notes = lead.notes || "";
-
-      if (!business_name) {
-        results.push({
-          success: false,
-          business_name: "Unknown",
-          website,
-          error: "business_name is required"
-        });
-        continue;
-      }
-
-      if (!website && !google_maps_url && !instagram_url && !phone && !notes) {
-        results.push({
-          success: false,
-          business_name,
-          website,
-          error: "Provide at least one of: website, google_maps_url, instagram_url, phone, or notes"
-        });
-        continue;
-      }
-
+    for (const lead of leads) {
       try {
-        console.log(`\n▶ Lead ${i + 1}/${leads.length}: ${business_name}`);
-
         const processRes = await axios.post(
           `${baseUrl}/process-lead`,
           {
-            business_name,
-            website,
-            google_maps_url,
-            instagram_url,
-            phone,
-            notes,
+            lead_id: lead.lead_id || lead.id || null,
+            campaign_id,
+            business_name: lead.business_name,
+            website: lead.website,
+            google_maps_url: lead.google_maps_url,
+            instagram_url: lead.instagram_url,
+            phone: lead.phone,
+            email: lead.email,
+            address: lead.address,
+            notes: lead.notes,
+            source: lead.source,
             service_offered,
             sender_name,
             sender_business
           },
-          {
-            timeout: 600000
-          }
+          { timeout: 600000 }
         );
 
-        results.push({
-          success: true,
-          ...processRes.data
-        });
-
-        console.log(`✅ Finished: ${business_name}`);
-
+        results.push(processRes.data);
       } catch (leadError) {
-        console.error(`❌ Failed: ${business_name}`, leadError.message);
-
         results.push({
           success: false,
-          business_name,
-          website,
-          error:
-            leadError.response?.data?.error ||
-            leadError.message ||
-            "Unknown lead processing error"
+          business_name: lead.business_name || "Unknown",
+          error: leadError.response?.data?.error || leadError.message
         });
       }
     }
 
-    const successCount = results.filter(r => r.success).length;
-    const failedCount = results.length - successCount;
-
-    console.log(`🎉 Batch complete: ${successCount} success, ${failedCount} failed`);
-
     return res.json({
       success: true,
       processed_count: results.length,
-      success_count: successCount,
-      failed_count: failedCount,
+      success_count: results.filter(r => r.success).length,
+      failed_count: results.filter(r => !r.success).length,
       results
     });
 
@@ -2052,7 +1649,6 @@ app.post("/process-leads", async (req, res) => {
 
 // ─────────────────────────────────────────────
 // LEAD FINDER HELPERS
-// Multi-industry lead discovery using OpenStreetMap + Overpass API
 // ─────────────────────────────────────────────
 function escapeOverpassString(value) {
   return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -2066,143 +1662,37 @@ function buildOverpassSelectors(targetBusiness) {
   const t = normalizeTarget(targetBusiness);
 
   const groups = [
-    {
-      match: ["gym", "gyms", "fitness", "fitness centre", "fitness center", "fitness studio", "personal trainer"],
-      label: "fitness business",
-      selectors: [
-        '["leisure"="fitness_centre"]',
-        '["sport"="fitness"]'
-      ]
-    },
-    {
-      match: ["dental", "dentist", "dental clinic", "orthodontist"],
-      label: "dental clinic",
-      selectors: [
-        '["amenity"="dentist"]'
-      ]
-    },
-    {
-      match: ["clinic", "clinics", "doctor", "doctors", "health clinic", "medical clinic"],
-      label: "healthcare clinic",
-      selectors: [
-        '["amenity"="clinic"]',
-        '["amenity"="doctors"]'
-      ]
-    },
-    {
-      match: ["hospital", "hospitals"],
-      label: "hospital",
-      selectors: [
-        '["amenity"="hospital"]'
-      ]
-    },
-    {
-      match: ["restaurant", "restaurants", "food business", "cafe", "cafes", "coffee shop"],
-      label: "restaurant or cafe",
-      selectors: [
-        '["amenity"="restaurant"]',
-        '["amenity"="cafe"]',
-        '["amenity"="fast_food"]'
-      ]
-    },
-    {
-      match: ["salon", "salons", "beauty salon", "hair salon", "spa", "beauty"],
-      label: "salon or beauty business",
-      selectors: [
-        '["shop"="hairdresser"]',
-        '["shop"="beauty"]'
-      ]
-    },
-    {
-      match: ["school", "schools", "tuition", "coaching center", "coaching centre", "college", "academy"],
-      label: "education business",
-      selectors: [
-        '["amenity"="school"]',
-        '["amenity"="college"]',
-        '["amenity"="university"]',
-        '["office"="educational_institution"]'
-      ]
-    },
-    {
-      match: ["hotel", "hotels", "hostel", "guest house", "lodging"],
-      label: "hospitality business",
-      selectors: [
-        '["tourism"="hotel"]',
-        '["tourism"="guest_house"]',
-        '["tourism"="hostel"]'
-      ]
-    },
-    {
-      match: ["pharmacy", "pharmacies", "medical store"],
-      label: "pharmacy",
-      selectors: [
-        '["amenity"="pharmacy"]'
-      ]
-    },
-    {
-      match: ["bakery", "bakeries"],
-      label: "bakery",
-      selectors: [
-        '["shop"="bakery"]'
-      ]
-    },
-    {
-      match: ["car repair", "mechanic", "automobile service", "auto service", "garage"],
-      label: "auto service business",
-      selectors: [
-        '["shop"="car_repair"]',
-        '["shop"="car"]'
-      ]
-    },
-    {
-      match: ["real estate", "property dealer", "estate agent"],
-      label: "real estate business",
-      selectors: [
-        '["office"="estate_agent"]'
-      ]
-    },
-    {
-      match: ["lawyer", "law firm", "legal"],
-      label: "legal service business",
-      selectors: [
-        '["office"="lawyer"]'
-      ]
-    },
-    {
-      match: ["accountant", "accounting", "ca", "chartered accountant"],
-      label: "accounting service business",
-      selectors: [
-        '["office"="accountant"]'
-      ]
-    }
+    { match: ["gym", "gyms", "fitness", "fitness centre", "fitness center", "fitness studio", "personal trainer"], label: "fitness business", selectors: ['["leisure"="fitness_centre"]', '["sport"="fitness"]'] },
+    { match: ["dental", "dentist", "dental clinic", "orthodontist"], label: "dental clinic", selectors: ['["amenity"="dentist"]'] },
+    { match: ["clinic", "clinics", "doctor", "doctors", "health clinic", "medical clinic"], label: "healthcare clinic", selectors: ['["amenity"="clinic"]', '["amenity"="doctors"]'] },
+    { match: ["hospital", "hospitals"], label: "hospital", selectors: ['["amenity"="hospital"]'] },
+    { match: ["restaurant", "restaurants", "food business", "cafe", "cafes", "coffee shop"], label: "restaurant or cafe", selectors: ['["amenity"="restaurant"]', '["amenity"="cafe"]', '["amenity"="fast_food"]'] },
+    { match: ["salon", "salons", "beauty salon", "hair salon", "spa", "beauty"], label: "salon or beauty business", selectors: ['["shop"="hairdresser"]', '["shop"="beauty"]'] },
+    { match: ["school", "schools", "tuition", "coaching center", "coaching centre", "college", "academy"], label: "education business", selectors: ['["amenity"="school"]', '["amenity"="college"]', '["amenity"="university"]', '["office"="educational_institution"]'] },
+    { match: ["hotel", "hotels", "hostel", "guest house", "lodging"], label: "hospitality business", selectors: ['["tourism"="hotel"]', '["tourism"="guest_house"]', '["tourism"="hostel"]'] },
+    { match: ["pharmacy", "pharmacies", "medical store"], label: "pharmacy", selectors: ['["amenity"="pharmacy"]'] },
+    { match: ["bakery", "bakeries"], label: "bakery", selectors: ['["shop"="bakery"]'] },
+    { match: ["car repair", "mechanic", "automobile service", "auto service", "garage"], label: "auto service business", selectors: ['["shop"="car_repair"]', '["shop"="car"]'] },
+    { match: ["real estate", "property dealer", "estate agent"], label: "real estate business", selectors: ['["office"="estate_agent"]'] },
+    { match: ["lawyer", "law firm", "legal"], label: "legal service business", selectors: ['["office"="lawyer"]'] },
+    { match: ["accountant", "accounting", "ca", "chartered accountant"], label: "accounting service business", selectors: ['["office"="accountant"]'] }
   ];
 
   const found = groups.find(g => g.match.some(m => t.includes(m)));
+  if (found) return found;
 
-  if (found) {
-    return found;
-  }
-
-  // Generic fallback: search named businesses containing the target keyword.
-  // This is less complete than category tags, but keeps the product multi-industry.
   const safeRegex = escapeOverpassString(targetBusiness).replace(/\s+/g, ".*");
   return {
     label: targetBusiness,
-    selectors: [
-      `["name"~"${safeRegex}",i]`
-    ]
+    selectors: [`["name"~"${safeRegex}",i]`]
   };
 }
 
 function buildOverpassQuery(targetBusiness, location) {
   const safeLocation = escapeOverpassString(location);
   const group = buildOverpassSelectors(targetBusiness);
-
   const selectorLines = group.selectors
-    .map(selector => `
-  node${selector}(area.searchArea);
-  way${selector}(area.searchArea);
-  relation${selector}(area.searchArea);`)
+    .map(selector => `\n  node${selector}(area.searchArea);\n  way${selector}(area.searchArea);\n  relation${selector}(area.searchArea);`)
     .join("");
 
   return {
@@ -2219,42 +1709,21 @@ out center tags;
 }
 
 // ─────────────────────────────────────────────
-// ROUTE 9 — FIND LEADS AUTOMATICALLY
-// POST /find-leads
-// Body:
-// {
-//   "target_business": "gyms | dental clinics | salons | restaurants | hotels | schools | etc.",
-//   "location": "Chennai",
-//   "max_results": 10
-// }
+// ROUTE 9 — FIND LEADS + OPTIONAL SUPABASE SAVE
 // ─────────────────────────────────────────────
 app.post("/find-leads", async (req, res) => {
   try {
-    const {
-      target_business,
-      location,
-      max_results = 10
-    } = req.body;
+    const { campaign_id, target_business, location, max_results = 10, save_to_database = true } = req.body;
 
     if (!target_business || typeof target_business !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "target_business is required"
-      });
+      return res.status(400).json({ success: false, error: "target_business is required" });
     }
-
     if (!location || typeof location !== "string") {
-      return res.status(400).json({
-        success: false,
-        error: "location is required"
-      });
+      return res.status(400).json({ success: false, error: "location is required" });
     }
 
     const safeLimit = Math.min(Math.max(Number(max_results) || 10, 1), 25);
     const { label, query: overpassQuery } = buildOverpassQuery(target_business, location);
-
-    console.log(`🔍 Finding ${safeLimit} ${target_business} leads in ${location}...`);
-
     const contactEmail = process.env.OVERPASS_CONTACT_EMAIL || process.env.CONTACT_EMAIL || "contact@example.com";
 
     const response = await axios.post(
@@ -2263,9 +1732,9 @@ app.post("/find-leads", async (req, res) => {
       {
         headers: {
           "Content-Type": "text/plain",
-          "Accept": "application/json",
+          Accept: "application/json",
           "User-Agent": `AI-Lead-Outreach-System/1.0 (contact: ${contactEmail})`,
-          "Referer": "https://pdf-api-bw6a.onrender.com/"
+          Referer: "https://pdf-api-bw6a.onrender.com/"
         },
         timeout: 60000
       }
@@ -2279,50 +1748,20 @@ app.post("/find-leads", async (req, res) => {
         const tags = el.tags || {};
         const lat = el.lat || el.center?.lat || "";
         const lon = el.lon || el.center?.lon || "";
-
-        const businessName =
-          tags.name ||
-          tags["name:en"] ||
-          "";
-
+        const businessName = tags.name || tags["name:en"] || "";
         if (!businessName) return null;
 
-        const website =
-          tags.website ||
-          tags["contact:website"] ||
-          "";
-
-        const phone =
-          tags.phone ||
-          tags["contact:phone"] ||
-          "";
-
-        const instagram =
-          tags.instagram ||
-          tags["contact:instagram"] ||
-          "";
-
-        const email =
-          tags.email ||
-          tags["contact:email"] ||
-          "";
-
-        const addressParts = [
-          tags["addr:housenumber"],
-          tags["addr:street"],
-          tags["addr:suburb"],
-          tags["addr:city"]
-        ].filter(Boolean);
-
+        const website = tags.website || tags["contact:website"] || "";
+        const phone = tags.phone || tags["contact:phone"] || "";
+        const instagram = tags.instagram || tags["contact:instagram"] || "";
+        const email = tags.email || tags["contact:email"] || "";
+        const addressParts = [tags["addr:housenumber"], tags["addr:street"], tags["addr:suburb"], tags["addr:city"]].filter(Boolean);
         const address = addressParts.join(", ");
-
-        const googleMapsSearchUrl =
-          lat && lon
-            ? `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`
-            : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${businessName} ${location}`)}`;
+        const googleMapsSearchUrl = lat && lon
+          ? `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`
+          : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${businessName} ${location}`)}`;
 
         const key = `${businessName.toLowerCase()}|${website}|${phone}|${lat}|${lon}`;
-
         if (seen.has(key)) return null;
         seen.add(key);
 
@@ -2334,15 +1773,17 @@ app.post("/find-leads", async (req, res) => {
           instagram_url: instagram,
           google_maps_url: googleMapsSearchUrl,
           address,
-          notes: `Found automatically from OpenStreetMap as a ${label} in ${location}. ${
-            website ? "Official website available." : "No website found in map data."
-          } ${
-            phone ? "Phone number available." : "Phone number not found in map data."
-          }`
+          source: "openstreetmap",
+          notes: `Found automatically from OpenStreetMap as a ${label} in ${location}. ${website ? "Official website available." : "No website found in map data."} ${phone ? "Phone number available." : "Phone number not found in map data."}`
         };
       })
       .filter(Boolean)
       .slice(0, safeLimit);
+
+    let savedLeads = [];
+    if (save_to_database && campaign_id) {
+      savedLeads = await insertLeadsForCampaign(campaign_id, leads);
+    }
 
     return res.json({
       success: true,
@@ -2350,7 +1791,12 @@ app.post("/find-leads", async (req, res) => {
       normalized_category: label,
       location,
       found_count: leads.length,
-      leads
+      leads,
+      database: {
+        saved: Boolean(save_to_database && campaign_id),
+        campaign_id: campaign_id || null,
+        saved_leads: savedLeads
+      }
     });
 
   } catch (error) {
@@ -2367,5 +1813,5 @@ app.post("/find-leads", async (req, res) => {
 // START SERVER
 // ─────────────────────────────────────────────
 app.listen(process.env.PORT || 3000, () => {
-  console.log("✅ AI Prospecting API v8 on port", process.env.PORT || 3000);
+  console.log("✅ AI Prospecting SaaS API v9 on port", process.env.PORT || 3000);
 });
