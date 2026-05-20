@@ -2050,6 +2050,159 @@ app.post("/process-leads", async (req, res) => {
     });
   }
 });
+// ─────────────────────────────────────────────
+// ROUTE 9 — FIND LEADS AUTOMATICALLY
+// Free lead discovery using OpenStreetMap + Overpass API
+// POST /find-leads
+// Body:
+// {
+//   "target_business": "gyms",
+//   "location": "Chennai",
+//   "max_results": 10
+// }
+// ─────────────────────────────────────────────
+app.post("/find-leads", async (req, res) => {
+  try {
+    const {
+      target_business,
+      location,
+      max_results = 10
+    } = req.body;
+
+    if (!target_business || typeof target_business !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "target_business is required"
+      });
+    }
+
+    if (!location || typeof location !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "location is required"
+      });
+    }
+
+    const allowedTargets = [
+      "gym",
+      "gyms",
+      "fitness",
+      "fitness centre",
+      "fitness center",
+      "fitness centres",
+      "fitness centers"
+    ];
+
+    if (!allowedTargets.includes(target_business.toLowerCase().trim())) {
+      return res.status(400).json({
+        success: false,
+        error: "For this first version, target_business must be gyms or fitness centres"
+      });
+    }
+
+    const safeLimit = Math.min(Math.max(Number(max_results) || 10, 1), 25);
+
+    console.log(`🔍 Finding ${safeLimit} gym leads in ${location}...`);
+
+    const overpassQuery = `
+[out:json][timeout:40];
+area["name"="${location}"]["boundary"="administrative"]->.searchArea;
+(
+  node["leisure"="fitness_centre"](area.searchArea);
+  way["leisure"="fitness_centre"](area.searchArea);
+  relation["leisure"="fitness_centre"](area.searchArea);
+);
+out center tags;
+`;
+
+    const response = await axios.post(
+      "https://overpass-api.de/api/interpreter",
+      overpassQuery,
+      {
+        headers: {
+          "Content-Type": "text/plain"
+        },
+        timeout: 60000
+      }
+    );
+
+    const elements = response.data?.elements || [];
+
+    const leads = elements
+      .map((el) => {
+        const tags = el.tags || {};
+
+        const lat = el.lat || el.center?.lat || "";
+        const lon = el.lon || el.center?.lon || "";
+
+        const businessName =
+          tags.name ||
+          tags["name:en"] ||
+          "";
+
+        if (!businessName) return null;
+
+        const website =
+          tags.website ||
+          tags["contact:website"] ||
+          "";
+
+        const phone =
+          tags.phone ||
+          tags["contact:phone"] ||
+          "";
+
+        const instagram =
+          tags.instagram ||
+          tags["contact:instagram"] ||
+          "";
+
+        const addressParts = [
+          tags["addr:housenumber"],
+          tags["addr:street"],
+          tags["addr:suburb"],
+          tags["addr:city"]
+        ].filter(Boolean);
+
+        const address = addressParts.join(", ");
+
+        const googleMapsSearchUrl =
+          lat && lon
+            ? `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`
+            : "";
+
+        return {
+          business_name: businessName,
+          website,
+          phone,
+          instagram_url: instagram,
+          google_maps_url: googleMapsSearchUrl,
+          address,
+          notes: `Found automatically from OpenStreetMap as a fitness centre in ${location}. ${
+            website ? "Official website available." : "No website found in map data."
+          }`
+        };
+      })
+      .filter(Boolean)
+      .slice(0, safeLimit);
+
+    return res.json({
+      success: true,
+      target_business,
+      location,
+      found_count: leads.length,
+      leads
+    });
+
+  } catch (error) {
+    console.error("FIND LEADS ERROR:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 // ─────────────────────────────────────────────
 // START SERVER
