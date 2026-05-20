@@ -1808,6 +1808,284 @@ app.post("/find-leads", async (req, res) => {
     });
   }
 });
+// ═════════════════════════════════════════════
+// V10 CAMPAIGN RUNNER + RESULTS API
+// Paste this entire block ABOVE:
+// // START SERVER
+// ═════════════════════════════════════════════
+
+async function getCampaignLeads(campaignId, processingStatus = null) {
+  const statusFilter = processingStatus
+    ? `&processing_status=eq.${encodeURIComponent(processingStatus)}`
+    : "";
+
+  const rows = await supabaseRequest({
+    table: "leads",
+    query: `?campaign_id=eq.${encodeURIComponent(campaignId)}${statusFilter}&select=*&order=created_at.asc`
+  });
+
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function getRowsByLeadIds(table, leadIds) {
+  if (!leadIds.length) return [];
+
+  const ids = leadIds.map(id => encodeURIComponent(id)).join(",");
+
+  const rows = await supabaseRequest({
+    table,
+    query: `?lead_id=in.(${ids})&select=*`
+  });
+
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function buildCampaignResults(campaignId) {
+  const campaign = await findCampaignById(campaignId);
+
+  if (!campaign) {
+    throw new Error("campaign_id does not exist in Supabase");
+  }
+
+  const leads = await getCampaignLeads(campaignId);
+  const leadIds = leads.map(lead => lead.id);
+
+  const [analyses, outreachMessages, reports] = await Promise.all([
+    getRowsByLeadIds("lead_analyses", leadIds),
+    getRowsByLeadIds("outreach_messages", leadIds),
+    getRowsByLeadIds("reports", leadIds)
+  ]);
+
+  const analysisByLeadId = new Map(analyses.map(row => [row.lead_id, row]));
+  const outreachByLeadId = new Map(outreachMessages.map(row => [row.lead_id, row]));
+  const reportByLeadId = new Map(reports.map(row => [row.lead_id, row]));
+
+  return {
+    campaign,
+    summary: {
+      total_leads: leads.length,
+      new_leads: leads.filter(lead => lead.processing_status === "new").length,
+      processing_leads: leads.filter(lead => lead.processing_status === "processing").length,
+      processed_leads: leads.filter(lead => lead.processing_status === "processed").length,
+      failed_leads: leads.filter(lead => lead.processing_status === "failed").length
+    },
+    results: leads.map(lead => ({
+      lead,
+      analysis: analysisByLeadId.get(lead.id) || null,
+      outreach: outreachByLeadId.get(lead.id) || null,
+      report: reportByLeadId.get(lead.id) || null
+    }))
+  };
+}
+
+async function runCampaignInBackground(campaignId, baseUrl) {
+  try {
+    console.log(`🚀 Campaign run started: ${campaignId}`);
+
+    const campaign = await findCampaignById(campaignId);
+
+    if (!campaign) {
+      throw new Error("campaign_id does not exist in Supabase");
+    }
+
+    await updateRows(
+      "campaigns",
+      `?id=eq.${encodeURIComponent(campaignId)}`,
+      {
+        status: "running",
+        updated_at: new Date().toISOString()
+      }
+    );
+
+    // Step 1: reuse already-saved new leads if they exist.
+    let leads = await getCampaignLeads(campaignId, "new");
+
+    // Step 2: if this campaign has no saved new leads yet, find and save fresh leads.
+    if (!leads.length) {
+      console.log(`🔍 No unprocessed leads found. Discovering new leads for campaign: ${campaignId}`);
+
+      const findRes = await axios.post(
+        `${baseUrl}/find-leads`,
+        {
+          campaign_id: campaignId,
+          target_business: campaign.lead_search_keyword,
+          location: campaign.target_location,
+          max_results: campaign.leads_requested || 10,
+          save_to_database: true
+        },
+        { timeout: 120000 }
+      );
+
+      leads = findRes.data?.database?.saved_leads || [];
+    }
+
+    if (!leads.length) {
+      await updateRows(
+        "campaigns",
+        `?id=eq.${encodeURIComponent(campaignId)}`,
+        {
+          status: "completed",
+          updated_at: new Date().toISOString()
+        }
+      );
+
+      console.log(`✅ Campaign completed with no leads to process: ${campaignId}`);
+      return;
+    }
+
+    // Step 3: process each saved lead one by one and persist outputs.
+    for (const lead of leads) {
+      try {
+        console.log(`⚙️ Processing campaign lead: ${lead.business_name}`);
+
+        await updateRows(
+          "leads",
+          `?id=eq.${encodeURIComponent(lead.id)}`,
+          {
+            processing_status: "processing",
+            updated_at: new Date().toISOString()
+          }
+        );
+
+        await axios.post(
+          `${baseUrl}/process-lead`,
+          {
+            lead_id: lead.id,
+            campaign_id: campaignId,
+            business_name: lead.business_name,
+            website: lead.website || "",
+            google_maps_url: lead.google_maps_url || "",
+            instagram_url: lead.instagram_url || "",
+            phone: lead.phone || "",
+            email: lead.email || "",
+            address: lead.address || "",
+            notes: lead.notes || "",
+            source: lead.source || "openstreetmap",
+            service_offered: campaign.service_offer,
+            sender_name: campaign.sender_name,
+            sender_business: campaign.client_business_name
+          },
+          { timeout: 700000 }
+        );
+
+        console.log(`✅ Lead processed: ${lead.business_name}`);
+
+      } catch (leadError) {
+        console.error(`❌ Lead failed: ${lead.business_name}`, leadError.response?.data?.error || leadError.message);
+
+        await updateRows(
+          "leads",
+          `?id=eq.${encodeURIComponent(lead.id)}`,
+          {
+            processing_status: "failed",
+            updated_at: new Date().toISOString()
+          }
+        );
+      }
+    }
+
+    await updateRows(
+      "campaigns",
+      `?id=eq.${encodeURIComponent(campaignId)}`,
+      {
+        status: "completed",
+        updated_at: new Date().toISOString()
+      }
+    );
+
+    console.log(`🎉 Campaign fully completed: ${campaignId}`);
+
+  } catch (error) {
+    console.error(`💥 Campaign run failed: ${campaignId}`, error.message);
+
+    try {
+      await updateRows(
+        "campaigns",
+        `?id=eq.${encodeURIComponent(campaignId)}`,
+        {
+          status: "failed",
+          updated_at: new Date().toISOString()
+        }
+      );
+    } catch (statusError) {
+      console.error("Failed to update campaign status:", statusError.message);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// ROUTE 10 — RUN A FULL CAMPAIGN AUTOMATICALLY
+// POST /campaigns/:id/run
+// ─────────────────────────────────────────────
+app.post("/campaigns/:id/run", async (req, res) => {
+  try {
+    const campaignId = req.params.id;
+    const campaign = await findCampaignById(campaignId);
+
+    if (!campaign) {
+      return res.status(404).json({
+        success: false,
+        error: "Campaign not found"
+      });
+    }
+
+    if (campaign.status === "running") {
+      return res.status(409).json({
+        success: false,
+        error: "This campaign is already running"
+      });
+    }
+
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+
+    // Start background work without blocking the HTTP response.
+    setImmediate(() => {
+      runCampaignInBackground(campaignId, baseUrl);
+    });
+
+    return res.json({
+      success: true,
+      message: "Campaign run started",
+      campaign_id: campaignId,
+      status: "running"
+    });
+
+  } catch (error) {
+    console.error("RUN CAMPAIGN ERROR:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ─────────────────────────────────────────────
+// ROUTE 11 — GET COMPLETE CAMPAIGN RESULTS
+// GET /campaigns/:id/results
+// ─────────────────────────────────────────────
+app.get("/campaigns/:id/results", async (req, res) => {
+  try {
+    const campaignId = req.params.id;
+    const payload = await buildCampaignResults(campaignId);
+
+    return res.json({
+      success: true,
+      ...payload
+    });
+
+  } catch (error) {
+    console.error("GET CAMPAIGN RESULTS ERROR:", error.message);
+
+    const status = error.message.includes("does not exist") ? 404 : 500;
+
+    return res.status(status).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 
 // ─────────────────────────────────────────────
 // START SERVER
