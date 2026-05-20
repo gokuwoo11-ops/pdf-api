@@ -29,7 +29,7 @@ app.use("/files", express.static(path.join(__dirname, "public")));
 // HEALTH CHECK
 // ─────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.send("PDF API v7 running");
+  res.send("AI Prospecting API v8 running");
 });
 
 // ─────────────────────────────────────────────
@@ -68,9 +68,6 @@ app.get("/test-pexels", async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────
-// GEMINI HELPER
-// ─────────────────────────────────────────────
 // ─────────────────────────────────────────────
 // GEMINI HELPER WITH AUTO FALLBACK
 // Tries Gemini 3 Flash first.
@@ -339,6 +336,7 @@ async function embedImages(html) {
 
   return out;
 }
+
 // ─────────────────────────────────────────────
 // AUTO-FIT OVERFLOWING PAGE CONTENT
 // Works with your HTML classes:
@@ -469,38 +467,39 @@ async function createPdfFromHtml(html, req) {
 
     await browser.close();
     browser = null;
-const name = `report-${Date.now()}.pdf`;
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const bucket = process.env.SUPABASE_PDF_BUCKET || "pdf-reports";
+    const name = `report-${Date.now()}.pdf`;
 
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error("Supabase storage environment variables are missing");
-}
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const bucket = process.env.SUPABASE_PDF_BUCKET || "pdf-reports";
 
-console.log("☁️ Uploading PDF to Supabase Storage...");
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error("Supabase storage environment variables are missing");
+    }
 
-await axios.post(
-  `${supabaseUrl}/storage/v1/object/${bucket}/${name}`,
-  pdf,
-  {
-    headers: {
-      "Authorization": `Bearer ${supabaseKey}`,
-      "apikey": supabaseKey,
-      "Content-Type": "application/pdf",
-      "x-upsert": "true"
-    },
-    maxBodyLength: Infinity,
-    timeout: 60000
-  }
-);
+    console.log("☁️ Uploading PDF to Supabase Storage...");
 
-const url = `${supabaseUrl}/storage/v1/object/public/${bucket}/${name}`;
+    await axios.post(
+      `${supabaseUrl}/storage/v1/object/${bucket}/${name}`,
+      pdf,
+      {
+        headers: {
+          "Authorization": `Bearer ${supabaseKey}`,
+          "apikey": supabaseKey,
+          "Content-Type": "application/pdf",
+          "x-upsert": "true"
+        },
+        maxBodyLength: Infinity,
+        timeout: 60000
+      }
+    );
 
-console.log("🎉 Permanent PDF ready:", url);
+    const url = `${supabaseUrl}/storage/v1/object/public/${bucket}/${name}`;
 
-return url;
+    console.log("🎉 Permanent PDF ready:", url);
+
+    return url;
   } catch (error) {
     if (browser) {
       try {
@@ -582,11 +581,12 @@ app.post("/generate-pdf", async (req, res) => {
 // BRIEF PROMPT BUILDER
 // ─────────────────────────────────────────────
 function buildBriefPrompt(rawNotes) {
-    const currentPeriod = new Date().toLocaleString("en-IN", {
+  const currentPeriod = new Date().toLocaleString("en-IN", {
     month: "long",
     year: "numeric",
     timeZone: "Asia/Kolkata"
   });
+
   return `
 You are a B2B growth analyst preparing a lead audit brief.
 
@@ -659,37 +659,11 @@ Input notes:
 ${rawNotes}
 `;
 }
+
 async function generateBriefFromNotes(rawNotes) {
   const prompt = buildBriefPrompt(rawNotes);
   const brief = await callGemini(prompt, 8192, 0.7);
   return brief;
-}
-
-// ─────────────────────────────────────────────
-// GENERATE RESEARCH BRIEF HELPER
-// ─────────────────────────────────────────────
-async function generateHtmlFromBrief(brief) {
-  const prompt = buildHtmlPrompt(brief);
-
-  // HTML output is huge, so allow Gemini to generate much more text
-  let html = await callGemini(prompt, 50000, 0.5);
-
-  html = cleanHtml(html);
-
-  // Safety check: this report template should contain 9 .page sections
-  const pageCount = (html.match(/class="page/g) || []).length;
-
-  if (pageCount < 9) {
-    throw new Error(
-      `Generated HTML looks incomplete. Only ${pageCount} page sections found. Expected 9.`
-    );
-  }
-
-  if (!html.includes("</html>")) {
-    throw new Error("Generated HTML is incomplete. Closing </html> tag is missing.");
-  }
-
-  return html;
 }
 
 // ─────────────────────────────────────────────
@@ -731,10 +705,6 @@ app.post("/generate-brief", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// HTML PROMPT BUILDER
-// This is based on your earlier Relevance AI HTML prompt structure
-// ─────────────────────────────────────────────
-// ─────────────────────────────────────────────
 // AUDIT HTML PROMPT BUILDER
 // Designed for B2B lead audit PDFs
 // 4 pages: Cover, Problems, Opportunity, Solution
@@ -757,7 +727,6 @@ SPORTS:     --c1:#C62828  --c2:#FF6B35  --dark:#1A0A0A  --bg:#F9F9F9
 ACADEMIC:   --c1:#4A148C  --c2:#7B1FA2  --dark:#0D0020  --bg:#F3E5F5
 ECO:        --c1:#00695C  --c2:#00ACC1  --dark:#001A16  --bg:#E0F2F1
 
-IMAGE RULES:
 IMAGE RULES:
 [IMG:keywords] goes on cover page and page 3 only.
 
@@ -1334,9 +1303,22 @@ ${brief}
 async function generateHtmlFromBrief(brief) {
   const prompt = buildHtmlPrompt(brief);
 
-  let html = await callGemini(prompt, 8192, 0.5);
+  // Audit HTML is large. Keep token room high enough for full 4-page output.
+  let html = await callGemini(prompt, 50000, 0.5);
 
   html = cleanHtml(html);
+
+  const pageCount = (html.match(/class="page/g) || []).length;
+
+  if (pageCount < 4) {
+    throw new Error(
+      `Generated HTML looks incomplete. Only ${pageCount} page sections found. Expected at least 4.`
+    );
+  }
+
+  if (!html.includes("</html>")) {
+    throw new Error("Generated HTML is incomplete. Closing </html> tag is missing.");
+  }
 
   return html;
 }
@@ -1426,6 +1408,7 @@ app.post("/generate-report-pdf", async (req, res) => {
     });
   }
 });
+
 // ─────────────────────────────────────────────
 // SIMPLE HTML → READABLE TEXT CLEANER
 // Used for website analysis
@@ -1448,16 +1431,6 @@ function extractReadableTextFromHtml(html) {
     .slice(0, 12000);
 }
 
-// ─────────────────────────────────────────────
-// ROUTE 5 — ANALYZE A LEAD WEBSITE
-// POST /analyze-lead
-// Body:
-// {
-//   "business_name": "...",
-//   "website": "...",
-//   "service_offered": "..."
-// }
-// ─────────────────────────────────────────────
 // ─────────────────────────────────────────────
 // ROUTE 5 — ANALYZE A LEAD
 // Supports:
@@ -1662,16 +1635,10 @@ Rules:
     });
   }
 });
+
 // ─────────────────────────────────────────────
 // ROUTE 6 — GENERATE OUTREACH + AUDIT PDF
 // POST /generate-outreach
-// Body:
-// {
-//   "analysis": { ...result from /analyze-lead... },
-//   "sender_name": "Sri Nath",
-//   "sender_business": "Your Agency Name",
-//   "sender_service": "website redesign, local SEO, and booking automation"
-// }
 // ─────────────────────────────────────────────
 app.post("/generate-outreach", async (req, res) => {
   try {
@@ -1712,7 +1679,6 @@ app.post("/generate-outreach", async (req, res) => {
 
     console.log(`✉️ Generating outreach for: ${analysis.business_name}`);
 
-    // ── Step 1: Generate personalized outreach email ──
     const outreachPrompt = `
 You are an expert B2B cold email copywriter.
 
@@ -1767,7 +1733,6 @@ Rules:
       });
     }
 
-    // ── Step 2: Generate 4-page audit PDF from audit notes ──
     const auditNotes = analysis.audit_pdf_raw_notes;
 
     if (!auditNotes || typeof auditNotes !== "string") {
@@ -1800,11 +1765,7 @@ Rules:
     });
   }
 });
-// ─────────────────────────────────────────────
-// ROUTE 7 — PROCESS ONE LEAD FULLY
-// Analyze lead → Generate outreach → Generate PDF
-// POST /process-lead
-// ─────────────────────────────────────────────
+
 // ─────────────────────────────────────────────
 // ROUTE 7 — PROCESS ONE LEAD FULLY
 // Analyze lead → Generate outreach → Generate PDF
@@ -1938,6 +1899,7 @@ app.post("/process-lead", async (req, res) => {
     });
   }
 });
+
 // ─────────────────────────────────────────────
 // ROUTE 8 — PROCESS MULTIPLE LEADS
 // Max 3 leads per request for stability
@@ -1996,14 +1958,28 @@ app.post("/process-leads", async (req, res) => {
       const lead = leads[i];
 
       const business_name = lead.business_name;
-      const website = lead.website;
+      const website = lead.website || "";
+      const google_maps_url = lead.google_maps_url || "";
+      const instagram_url = lead.instagram_url || "";
+      const phone = lead.phone || "";
+      const notes = lead.notes || "";
 
-      if (!business_name || !website) {
+      if (!business_name) {
         results.push({
           success: false,
-          business_name: business_name || "Unknown",
-          website: website || "Missing",
-          error: "business_name and website are required"
+          business_name: "Unknown",
+          website,
+          error: "business_name is required"
+        });
+        continue;
+      }
+
+      if (!website && !google_maps_url && !instagram_url && !phone && !notes) {
+        results.push({
+          success: false,
+          business_name,
+          website,
+          error: "Provide at least one of: website, google_maps_url, instagram_url, phone, or notes"
         });
         continue;
       }
@@ -2016,6 +1992,10 @@ app.post("/process-leads", async (req, res) => {
           {
             business_name,
             website,
+            google_maps_url,
+            instagram_url,
+            phone,
+            notes,
             service_offered,
             sender_name,
             sender_business
@@ -2069,13 +2049,181 @@ app.post("/process-leads", async (req, res) => {
     });
   }
 });
+
+// ─────────────────────────────────────────────
+// LEAD FINDER HELPERS
+// Multi-industry lead discovery using OpenStreetMap + Overpass API
+// ─────────────────────────────────────────────
+function escapeOverpassString(value) {
+  return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function normalizeTarget(value) {
+  return String(value || "").toLowerCase().trim();
+}
+
+function buildOverpassSelectors(targetBusiness) {
+  const t = normalizeTarget(targetBusiness);
+
+  const groups = [
+    {
+      match: ["gym", "gyms", "fitness", "fitness centre", "fitness center", "fitness studio", "personal trainer"],
+      label: "fitness business",
+      selectors: [
+        '["leisure"="fitness_centre"]',
+        '["sport"="fitness"]'
+      ]
+    },
+    {
+      match: ["dental", "dentist", "dental clinic", "orthodontist"],
+      label: "dental clinic",
+      selectors: [
+        '["amenity"="dentist"]'
+      ]
+    },
+    {
+      match: ["clinic", "clinics", "doctor", "doctors", "health clinic", "medical clinic"],
+      label: "healthcare clinic",
+      selectors: [
+        '["amenity"="clinic"]',
+        '["amenity"="doctors"]'
+      ]
+    },
+    {
+      match: ["hospital", "hospitals"],
+      label: "hospital",
+      selectors: [
+        '["amenity"="hospital"]'
+      ]
+    },
+    {
+      match: ["restaurant", "restaurants", "food business", "cafe", "cafes", "coffee shop"],
+      label: "restaurant or cafe",
+      selectors: [
+        '["amenity"="restaurant"]',
+        '["amenity"="cafe"]',
+        '["amenity"="fast_food"]'
+      ]
+    },
+    {
+      match: ["salon", "salons", "beauty salon", "hair salon", "spa", "beauty"],
+      label: "salon or beauty business",
+      selectors: [
+        '["shop"="hairdresser"]',
+        '["shop"="beauty"]'
+      ]
+    },
+    {
+      match: ["school", "schools", "tuition", "coaching center", "coaching centre", "college", "academy"],
+      label: "education business",
+      selectors: [
+        '["amenity"="school"]',
+        '["amenity"="college"]',
+        '["amenity"="university"]',
+        '["office"="educational_institution"]'
+      ]
+    },
+    {
+      match: ["hotel", "hotels", "hostel", "guest house", "lodging"],
+      label: "hospitality business",
+      selectors: [
+        '["tourism"="hotel"]',
+        '["tourism"="guest_house"]',
+        '["tourism"="hostel"]'
+      ]
+    },
+    {
+      match: ["pharmacy", "pharmacies", "medical store"],
+      label: "pharmacy",
+      selectors: [
+        '["amenity"="pharmacy"]'
+      ]
+    },
+    {
+      match: ["bakery", "bakeries"],
+      label: "bakery",
+      selectors: [
+        '["shop"="bakery"]'
+      ]
+    },
+    {
+      match: ["car repair", "mechanic", "automobile service", "auto service", "garage"],
+      label: "auto service business",
+      selectors: [
+        '["shop"="car_repair"]',
+        '["shop"="car"]'
+      ]
+    },
+    {
+      match: ["real estate", "property dealer", "estate agent"],
+      label: "real estate business",
+      selectors: [
+        '["office"="estate_agent"]'
+      ]
+    },
+    {
+      match: ["lawyer", "law firm", "legal"],
+      label: "legal service business",
+      selectors: [
+        '["office"="lawyer"]'
+      ]
+    },
+    {
+      match: ["accountant", "accounting", "ca", "chartered accountant"],
+      label: "accounting service business",
+      selectors: [
+        '["office"="accountant"]'
+      ]
+    }
+  ];
+
+  const found = groups.find(g => g.match.some(m => t.includes(m)));
+
+  if (found) {
+    return found;
+  }
+
+  // Generic fallback: search named businesses containing the target keyword.
+  // This is less complete than category tags, but keeps the product multi-industry.
+  const safeRegex = escapeOverpassString(targetBusiness).replace(/\s+/g, ".*");
+  return {
+    label: targetBusiness,
+    selectors: [
+      `["name"~"${safeRegex}",i]`
+    ]
+  };
+}
+
+function buildOverpassQuery(targetBusiness, location) {
+  const safeLocation = escapeOverpassString(location);
+  const group = buildOverpassSelectors(targetBusiness);
+
+  const selectorLines = group.selectors
+    .map(selector => `
+  node${selector}(area.searchArea);
+  way${selector}(area.searchArea);
+  relation${selector}(area.searchArea);`)
+    .join("");
+
+  return {
+    label: group.label,
+    query: `
+[out:json][timeout:40];
+area["name"="${safeLocation}"]["boundary"="administrative"]->.searchArea;
+(
+${selectorLines}
+);
+out center tags;
+`
+  };
+}
+
 // ─────────────────────────────────────────────
 // ROUTE 9 — FIND LEADS AUTOMATICALLY
-// Free lead discovery using OpenStreetMap + Overpass API
 // POST /find-leads
 // Body:
 // {
-//   "target_business": "gyms",
+//   "target_business": "gyms | dental clinics | salons | restaurants | hotels | schools | etc.",
 //   "location": "Chennai",
 //   "max_results": 10
 // }
@@ -2102,57 +2250,33 @@ app.post("/find-leads", async (req, res) => {
       });
     }
 
-    const allowedTargets = [
-      "gym",
-      "gyms",
-      "fitness",
-      "fitness centre",
-      "fitness center",
-      "fitness centres",
-      "fitness centers"
-    ];
-
-    if (!allowedTargets.includes(target_business.toLowerCase().trim())) {
-      return res.status(400).json({
-        success: false,
-        error: "For this first version, target_business must be gyms or fitness centres"
-      });
-    }
-
     const safeLimit = Math.min(Math.max(Number(max_results) || 10, 1), 25);
+    const { label, query: overpassQuery } = buildOverpassQuery(target_business, location);
 
-    console.log(`🔍 Finding ${safeLimit} gym leads in ${location}...`);
+    console.log(`🔍 Finding ${safeLimit} ${target_business} leads in ${location}...`);
 
-    const overpassQuery = `
-[out:json][timeout:40];
-area["name"="${location}"]["boundary"="administrative"]->.searchArea;
-(
-  node["leisure"="fitness_centre"](area.searchArea);
-  way["leisure"="fitness_centre"](area.searchArea);
-  relation["leisure"="fitness_centre"](area.searchArea);
-);
-out center tags;
-`;
+    const contactEmail = process.env.OVERPASS_CONTACT_EMAIL || process.env.CONTACT_EMAIL || "contact@example.com";
 
- const response = await axios.post(
-  "https://overpass-api.de/api/interpreter",
-  overpassQuery,
-  {
-    headers: {
-      "Content-Type": "text/plain",
-      "Accept": "application/json",
-      "User-Agent": "AI-Lead-Outreach-System/1.0 (contact: gokuwoo11@gmail.com)",
-      "Referer": "https://pdf-api-bw6a.onrender.com/"
-    },
-    timeout: 60000
-  }
-);
+    const response = await axios.post(
+      "https://overpass-api.de/api/interpreter",
+      overpassQuery,
+      {
+        headers: {
+          "Content-Type": "text/plain",
+          "Accept": "application/json",
+          "User-Agent": `AI-Lead-Outreach-System/1.0 (contact: ${contactEmail})`,
+          "Referer": "https://pdf-api-bw6a.onrender.com/"
+        },
+        timeout: 60000
+      }
+    );
+
     const elements = response.data?.elements || [];
+    const seen = new Set();
 
     const leads = elements
       .map((el) => {
         const tags = el.tags || {};
-
         const lat = el.lat || el.center?.lat || "";
         const lon = el.lon || el.center?.lon || "";
 
@@ -2178,6 +2302,11 @@ out center tags;
           tags["contact:instagram"] ||
           "";
 
+        const email =
+          tags.email ||
+          tags["contact:email"] ||
+          "";
+
         const addressParts = [
           tags["addr:housenumber"],
           tags["addr:street"],
@@ -2190,17 +2319,25 @@ out center tags;
         const googleMapsSearchUrl =
           lat && lon
             ? `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`
-            : "";
+            : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${businessName} ${location}`)}`;
+
+        const key = `${businessName.toLowerCase()}|${website}|${phone}|${lat}|${lon}`;
+
+        if (seen.has(key)) return null;
+        seen.add(key);
 
         return {
           business_name: businessName,
           website,
           phone,
+          email,
           instagram_url: instagram,
           google_maps_url: googleMapsSearchUrl,
           address,
-          notes: `Found automatically from OpenStreetMap as a fitness centre in ${location}. ${
+          notes: `Found automatically from OpenStreetMap as a ${label} in ${location}. ${
             website ? "Official website available." : "No website found in map data."
+          } ${
+            phone ? "Phone number available." : "Phone number not found in map data."
           }`
         };
       })
@@ -2210,6 +2347,7 @@ out center tags;
     return res.json({
       success: true,
       target_business,
+      normalized_category: label,
       location,
       found_count: leads.length,
       leads
@@ -2229,5 +2367,5 @@ out center tags;
 // START SERVER
 // ─────────────────────────────────────────────
 app.listen(process.env.PORT || 3000, () => {
-  console.log("✅ Server v7 on port", process.env.PORT || 3000);
+  console.log("✅ AI Prospecting API v8 on port", process.env.PORT || 3000);
 });
