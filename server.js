@@ -1732,6 +1732,55 @@ app.post("/process-leads", async (req, res) => {
 // ─────────────────────────────────────────────
 // LEAD FINDER HELPERS
 // ─────────────────────────────────────────────
+// Normalize messy lead search inputs into internal categories and clean location
+function titleCase(str) {
+  return String(str || "")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .map(s => s.charAt(0).toUpperCase() + s.slice(1))
+    .join(" ");
+}
+
+function normalizeLeadSearch({ lead_search_keyword, ideal_target_customer, target_business, location }) {
+  const raw_target = (lead_search_keyword || target_business || ideal_target_customer || "").toString();
+  const raw_location = (location || "").toString();
+
+  const t = raw_target.toLowerCase().trim();
+
+  // canonical mapping table
+  const mappings = [
+    { keys: ["gym","gyms","fitness","fitness center","fitness centre","fitness studio","personal trainer","workout","training studio","gym owner","gym owners"], normalized: "gyms" },
+    { keys: ["restaurant","restaurants","cafe","cafes","coffee shop","food business","food shop","eatery","fast food","dining"], normalized: "restaurants" },
+    { keys: ["salon","salons","beauty","beauty salon","hair salon","spa","makeup","barber"], normalized: "salons" },
+    { keys: ["dental","dentist","dentists","dental clinic","orthodontist"], normalized: "dentists" },
+    { keys: ["clinic","clinics","doctor","doctors","medical clinic","health clinic"], normalized: "clinics" }
+  ];
+
+  let normalized_target = "";
+  for (const m of mappings) {
+    if (m.keys.some(k => t.includes(k))) {
+      normalized_target = m.normalized;
+      break;
+    }
+  }
+
+  // fallback: if nothing matched, try to extract a single word
+  if (!normalized_target) {
+    const maybe = t.split(/[,\-\/\\]/)[0].trim();
+    normalized_target = maybe || t;
+  }
+
+  const normalized_location = raw_location ? titleCase(raw_location) : "";
+
+  return {
+    raw_target,
+    normalized_target,
+    raw_location,
+    normalized_location
+  };
+}
+
 function escapeOverpassString(value) {
   return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
@@ -1744,12 +1793,12 @@ function buildOverpassSelectors(targetBusiness) {
   const t = normalizeTarget(targetBusiness);
 
   const groups = [
-    { match: ["gym", "gyms", "fitness", "fitness centre", "fitness center", "fitness studio", "personal trainer"], label: "fitness business", selectors: ['["leisure"="fitness_centre"]', '["sport"="fitness"]'] },
+    { match: ["gym", "gyms", "fitness", "fitness centre", "fitness center", "fitness studio", "personal trainer", "workout", "training studio", "gym owner", "gym owners"], label: "fitness business", selectors: ['["leisure"="fitness_centre"]', '["sport"="fitness"]'] },
     { match: ["dental", "dentist", "dental clinic", "orthodontist"], label: "dental clinic", selectors: ['["amenity"="dentist"]'] },
     { match: ["clinic", "clinics", "doctor", "doctors", "health clinic", "medical clinic"], label: "healthcare clinic", selectors: ['["amenity"="clinic"]', '["amenity"="doctors"]'] },
     { match: ["hospital", "hospitals"], label: "hospital", selectors: ['["amenity"="hospital"]'] },
-    { match: ["restaurant", "restaurants", "food business", "cafe", "cafes", "coffee shop"], label: "restaurant or cafe", selectors: ['["amenity"="restaurant"]', '["amenity"="cafe"]', '["amenity"="fast_food"]'] },
-    { match: ["salon", "salons", "beauty salon", "hair salon", "spa", "beauty"], label: "salon or beauty business", selectors: ['["shop"="hairdresser"]', '["shop"="beauty"]'] },
+    { match: ["restaurant", "restaurants", "food business", "food shop", "eatery", "dining", "fast food", "cafe", "cafes", "coffee shop"], label: "restaurant or cafe", selectors: ['["amenity"="restaurant"]', '["amenity"="cafe"]', '["amenity"="fast_food"]'] },
+    { match: ["salon", "salons", "beauty salon", "hair salon", "spa", "beauty", "makeup", "barber"], label: "salon or beauty business", selectors: ['["shop"="hairdresser"]', '["shop"="beauty"]'] },
     { match: ["school", "schools", "tuition", "coaching center", "coaching centre", "college", "academy"], label: "education business", selectors: ['["amenity"="school"]', '["amenity"="college"]', '["amenity"="university"]', '["office"="educational_institution"]'] },
     { match: ["hotel", "hotels", "hostel", "guest house", "lodging"], label: "hospitality business", selectors: ['["tourism"="hotel"]', '["tourism"="guest_house"]', '["tourism"="hostel"]'] },
     { match: ["pharmacy", "pharmacies", "medical store"], label: "pharmacy", selectors: ['["amenity"="pharmacy"]'] },
@@ -1835,18 +1884,35 @@ async function requestOverpassWithFallback(overpassQuery, contactEmail) {
 // ─────────────────────────────────────────────
 app.post("/find-leads", async (req, res) => {
   try {
-    const { campaign_id, target_business, location, max_results = 10, save_to_database = true } = req.body;
+    const {
+      campaign_id,
+      target_business,
+      lead_search_keyword,
+      ideal_target_customer,
+      location,
+      max_results = 10,
+      save_to_database = true
+    } = req.body;
 
-    if (!target_business || typeof target_business !== "string") {
-      return res.status(400).json({ success: false, error: "target_business is required" });
+    const rawTargetProvided = (lead_search_keyword || target_business || ideal_target_customer || "").toString();
+    const rawLocationProvided = (location || "").toString();
+
+    if (!rawTargetProvided) {
+      return res.status(400).json({ success: false, error: "target_business or lead_search_keyword is required" });
     }
-    if (!location || typeof location !== "string") {
+    if (!rawLocationProvided) {
       return res.status(400).json({ success: false, error: "location is required" });
     }
 
     const safeLimit = Math.min(Math.max(Number(max_results) || 10, 1), 25);
-    const { label, query: overpassQuery } = buildOverpassQuery(target_business, location);
+
+    const normalized = normalizeLeadSearch({ lead_search_keyword, ideal_target_customer, target_business, location });
+    const { normalized_target, normalized_location } = normalized;
+
+    const { label, query: overpassQuery } = buildOverpassQuery(normalized_target, normalized_location || location);
     const contactEmail = process.env.OVERPASS_CONTACT_EMAIL || process.env.CONTACT_EMAIL || "contact@example.com";
+
+    console.log(`🔎 FIND LEADS: using normalized target='${normalized_target}', normalized location='${normalized_location}'`);
 
     const response = await requestOverpassWithFallback(overpassQuery, contactEmail);
 
@@ -1891,21 +1957,34 @@ app.post("/find-leads", async (req, res) => {
       .slice(0, safeLimit);
 
     let savedLeads = [];
+    let insertError = null;
     if (save_to_database && campaign_id) {
-      savedLeads = await insertLeadsForCampaign(campaign_id, leads);
+      try {
+        savedLeads = await insertLeadsForCampaign(campaign_id, leads);
+      } catch (e) {
+        console.error("❌ Supabase insert error:", e.message);
+        insertError = e.message;
+      }
     }
+
+    const search_used = {
+      raw_target_business: rawTargetProvided,
+      normalized_target: normalized_target,
+      normalized_category: label,
+      raw_location: rawLocationProvided,
+      normalized_location: normalized_location
+    };
 
     return res.json({
       success: true,
-      target_business,
-      normalized_category: label,
-      location,
+      search_used,
       found_count: leads.length,
       leads,
       database: {
-        saved: Boolean(save_to_database && campaign_id),
+        saved: Boolean(save_to_database && campaign_id && !insertError),
         campaign_id: campaign_id || null,
-        saved_leads: savedLeads
+        saved_leads: savedLeads,
+        insert_error: insertError
       }
     });
 
@@ -2014,19 +2093,60 @@ async function runCampaignInBackground(campaignId, baseUrl) {
     if (!leads.length) {
       console.log(`🔍 No unprocessed leads found. Discovering new leads for campaign: ${campaignId}`);
 
-      const findRes = await axios.post(
-        `${baseUrl}/find-leads`,
-        {
-          campaign_id: campaignId,
-          target_business: campaign.lead_search_keyword,
-          location: campaign.target_location,
-          max_results: campaign.leads_requested || 10,
-          save_to_database: true
-        },
-        { timeout: 120000 }
-      );
+      // Prepare and log discovery context
+      const discoveryContext = {
+        campaign_id: campaignId,
+        client_business_name: campaign.client_business_name,
+        raw_lead_search_keyword: campaign.lead_search_keyword || "",
+        ideal_target_customer: campaign.ideal_target_customer || "",
+        raw_target_location: campaign.target_location || "",
+        leads_requested: campaign.leads_requested || 20
+      };
 
-      leads = findRes.data?.database?.saved_leads || [];
+      const normalizedPreview = normalizeLeadSearch({
+        lead_search_keyword: campaign.lead_search_keyword,
+        ideal_target_customer: campaign.ideal_target_customer,
+        target_business: campaign.lead_search_keyword,
+        location: campaign.target_location
+      });
+
+      console.log("--- Campaign discovery context ---");
+      console.log("campaign id:", discoveryContext.campaign_id);
+      console.log("campaign client:", discoveryContext.client_business_name);
+      console.log("raw lead_search_keyword:", discoveryContext.raw_lead_search_keyword);
+      console.log("ideal_target_customer:", discoveryContext.ideal_target_customer);
+      console.log("raw target_location:", discoveryContext.raw_target_location);
+      console.log("normalized target:", normalizedPreview.normalized_target);
+      console.log("normalized location:", normalizedPreview.normalized_location);
+
+      let findRes;
+      try {
+        findRes = await axios.post(
+          `${baseUrl}/find-leads`,
+          {
+            campaign_id: campaignId,
+            lead_search_keyword: campaign.lead_search_keyword,
+            ideal_target_customer: campaign.ideal_target_customer,
+            target_business: campaign.lead_search_keyword,
+            location: campaign.target_location,
+            max_results: campaign.leads_requested || 20,
+            save_to_database: true
+          },
+          { timeout: 120000 }
+        );
+      } catch (findErr) {
+        console.error("❌ Lead discovery request failed:", findErr.response?.data?.error || findErr.message);
+        findRes = findErr.response?.data ? { data: findErr.response.data } : null;
+      }
+
+      const rawFound = findRes?.data?.found_count || (findRes?.data?.leads || []).length || 0;
+      const savedCount = (findRes?.data?.database?.saved_leads || []).length || 0;
+      const insertError = findRes?.data?.database?.insert_error || null;
+
+      console.log(`🔎 Discovery results — raw found: ${rawFound}, saved: ${savedCount}`);
+      if (insertError) console.error("❌ Supabase insert error:", insertError);
+
+      leads = findRes?.data?.database?.saved_leads || [];
     }
 
     if (!leads.length) {
