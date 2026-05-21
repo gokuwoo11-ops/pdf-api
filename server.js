@@ -932,8 +932,8 @@ CATEGORY SELECTION RULE:
 TOPIC: [business name or industry being audited — 5 words max]
 TAGLINE: [one sharp sentence about the opportunity found]
 AUDIENCE: [who this audit is for — the prospect's business type]
-SERVICE PROVIDER: [who is sending this — extract from notes or write "Our Agency"]
-CONTACT: [email or phone if mentioned, otherwise write "contact@youragency.com"]
+SERVICE PROVIDER: [Extract from notes if available. If notes contain "Prepared By:", use that value. If notes contain sender or agency name, use it. NEVER use "Our Agency" or placeholder text. Always use the actual business name provided in the notes.]
+CONTACT: [Extract email or phone from notes if mentioned. If notes contain "Contact Email:" or "Contact:" or "Sender Email:", use that value. NEVER use "contact@youragency.com" placeholder. If no contact found, use empty string and let template handle it.]
 CURRENT PERIOD: ${currentPeriod}
 Use this exact current period. Do not change the year or invent another date.
 OPPORTUNITY SCORE: [a number 60-95 representing how strong this lead is]
@@ -985,6 +985,12 @@ STEP 3: [what happens in week 4 — 5 words]
 STEP 4: [ongoing work — 5 words]
 CTA HEADING: [3-5 word call to action]
 CTA DESCRIPTION: [2 sentences — urgency, next step, benefit]
+
+EVIDENCE-SAFE WORDING RULES:
+- If website/social data is missing from available sources, use "not found in available map data" or "not discoverable in automated search" instead of claiming "no Instagram" or "zero digital presence".
+- Prefer respectful SaaS language: "limited discoverability", "missed online booking opportunity", "opportunity to strengthen digital presence".
+- Always reference where information came from: "based on website analysis", "from map data", "from manual notes".
+- Do not invent digital presence or capabilities not supported by the evidence provided.
 
 Input notes:
 ${rawNotes}
@@ -1168,7 +1174,7 @@ body { font-family:'Inter',sans-serif; }
 </head>
 <body>
 <div class="page page-cover cover">
-[IMG:professional business industry photo matching the target business sector]
+[IMG:professional industry photo matching sector — select gym fitness training for SPORTS category, medical healthcare professional for HEALTH category, restaurant food service dining for restaurants, corporate modern professional for CORPORATE]
 <div class="overlay"></div>
 <div class="body">
   <div class="cover-top"><div class="cover-badge">Growth Audit Report</div><div class="cover-date">Prepared: Copy current period from brief</div></div>
@@ -1177,13 +1183,19 @@ body { font-family:'Inter',sans-serif; }
 </div>
 </div>
 <div class="page page-problems"><div class="problems-header"><div class="ph-left"><div class="section-lbl">02 / Analysis</div><div class="section-h">Problems We Identified</div></div><div class="ph-num">02</div></div><div class="problems-body"><p class="section-intro">Copy SUMMARY sentence 1 and 2 from Problems section of brief.</p><div class="prob-list"><div class="prob-item"><div class="prob-num">01</div><div class="prob-content"><div class="prob-title">Copy PROBLEM 1 TITLE from brief</div><p class="prob-desc">Copy PROBLEM 1 DETAIL from brief — 2 sentences max.</p></div></div><div class="prob-item"><div class="prob-num">02</div><div class="prob-content"><div class="prob-title">Copy PROBLEM 2 TITLE from brief</div><p class="prob-desc">Copy PROBLEM 2 DETAIL from brief — 2 sentences max.</p></div></div><div class="prob-item"><div class="prob-num">03</div><div class="prob-content"><div class="prob-title">Copy PROBLEM 3 TITLE from brief</div><p class="prob-desc">Copy PROBLEM 3 DETAIL from brief — 2 sentences max.</p></div></div><div class="prob-item"><div class="prob-num">04</div><div class="prob-content"><div class="prob-title">Copy PROBLEM 4 TITLE from brief</div><p class="prob-desc">Copy PROBLEM 4 DETAIL from brief — 2 sentences max.</p></div></div></div><div class="impact-row"><div class="impact-label">Overall Impact Risk</div><div class="impact-bar-wrap"><div class="impact-bar" style="width:IMPACT_PERCENT%;"></div></div><div class="impact-val">IMPACT_PERCENT% Revenue at Risk</div></div></div></div>
-<div class="page page-opp"><div class="opp-photo">[IMG:business growth success professional team working results opportunity]<div class="opp-photo-overlay"></div><div class="opp-photo-text"><div class="opp-photo-title">Copy OPPORTUNITY HEADLINE from brief</div></div></div><div class="opp-body"><p class="section-intro" style="color:#374151;margin-bottom:16px;">Copy OPPORTUNITY SUMMARY sentence 1 and 2 from brief.</p><div class="opp-stats"><div class="opp-stat"><div class="opp-stat-num">Copy STAT 1 VALUE</div><div class="opp-stat-label">Copy STAT 1 LABEL</div></div><div class="opp-stat"><div class="opp-stat-num">Copy STAT 2 VALUE</div><div class="opp-stat-label">Copy STAT 2 LABEL</div></div><div class="opp-stat"><div class="opp-stat-num">Copy STAT 3 VALUE</div><div class="opp-stat-label">Copy STAT 3 LABEL</div></div></div><div class="comp-table-wrap"><table class="comp-table"><thead><tr><th>Copy COL1 from brief</th><th>Copy COL2 from brief</th><th>Copy COL3 from brief</th></tr></thead><tbody><tr><td>ROW1 val1</td><td>ROW1 val2</td><td>ROW1 val3</td></tr><tr><td>ROW2 val1</td><td>ROW2 val2</td><td>ROW2 val3</td></tr><tr><td>ROW3 val1</td><td>ROW3 val2</td><td>ROW3 val3</td></tr><tr><td>ROW4 val1</td><td>ROW4 val2</td><td>ROW4 val3</td></tr></tbody></table></div></div></div>
+<div class="page page-opp"><div class="opp-photo">[IMG:opportunity success sector-specific — gym training results fitness growth for SPORTS, healthcare clinic patient success for HEALTH, restaurant revenue growth dining success for restaurants, business team achievement for corporate]<div class="opp-photo-overlay"></div><div class="opp-photo-text"><div class="opp-photo-title">Copy OPPORTUNITY HEADLINE from brief</div></div></div><div class="opp-body"><p class="section-intro" style="color:#374151;margin-bottom:16px;">Copy OPPORTUNITY SUMMARY sentence 1 and 2 from brief.</p><div class="opp-stats"><div class="opp-stat"><div class="opp-stat-num">Copy STAT 1 VALUE</div><div class="opp-stat-label">Copy STAT 1 LABEL</div></div><div class="opp-stat"><div class="opp-stat-num">Copy STAT 2 VALUE</div><div class="opp-stat-label">Copy STAT 2 LABEL</div></div><div class="opp-stat"><div class="opp-stat-num">Copy STAT 3 VALUE</div><div class="opp-stat-label">Copy STAT 3 LABEL</div></div></div><div class="comp-table-wrap"><table class="comp-table"><thead><tr><th>Copy COL1 from brief</th><th>Copy COL2 from brief</th><th>Copy COL3 from brief</th></tr></thead><tbody><tr><td>ROW1 val1</td><td>ROW1 val2</td><td>ROW1 val3</td></tr><tr><td>ROW2 val1</td><td>ROW2 val2</td><td>ROW2 val3</td></tr><tr><td>ROW3 val1</td><td>ROW3 val2</td><td>ROW3 val3</td></tr><tr><td>ROW4 val1</td><td>ROW4 val2</td><td>ROW4 val3</td></tr></tbody></table></div></div></div>
 <div class="page page-solution"><div class="solution-header"><div class="ph-left"><div class="section-lbl">04 / Solution</div><div class="section-h">How We Fix This</div></div><div class="ph-num">04</div></div><div class="solution-body"><p class="section-intro">Copy SOLUTION SUMMARY sentence 1 and 2 from brief.</p><div class="service-grid"><div class="service-card"><h3>Copy SERVICE 1 TITLE from brief</h3><p>Copy SERVICE 1 DETAIL from brief — 2 sentences.</p></div><div class="service-card"><h3>Copy SERVICE 2 TITLE from brief</h3><p>Copy SERVICE 2 DETAIL from brief — 2 sentences.</p></div><div class="service-card"><h3>Copy SERVICE 3 TITLE from brief</h3><p>Copy SERVICE 3 DETAIL from brief — 2 sentences.</p></div><div class="service-card"><h3>Copy SERVICE 4 TITLE from brief</h3><p>Copy SERVICE 4 DETAIL from brief — 2 sentences.</p></div></div><div class="timeline"><div class="timeline-title">Implementation Timeline</div><div class="timeline-row"><div class="timeline-step"><div class="step-num">WEEK 1</div><div class="step-label">Copy STEP 1 from brief</div></div><div class="timeline-step"><div class="step-num">WEEK 2-3</div><div class="step-label">Copy STEP 2 from brief</div></div><div class="timeline-step"><div class="step-num">WEEK 4</div><div class="step-label">Copy STEP 3 from brief</div></div><div class="timeline-step"><div class="step-num">ONGOING</div><div class="step-label">Copy STEP 4 from brief</div></div></div></div><div class="cta-box"><div class="cta-left"><div class="cta-heading">Copy CTA HEADING from brief</div><p class="cta-sub">Copy CTA DESCRIPTION from brief — 2 sentences max.</p></div><div class="cta-right"><div class="cta-contact">Contact Us<strong>Copy CONTACT from brief</strong></div></div></div></div></div>
 </body>
 </html>
 
 Research brief for this audit:
 ${brief}
+
+IMAGE KEYWORD SELECTION RULES:
+- For SPORTS category (gyms, fitness): Use keywords like "gym", "fitness", "training", "workout", "strength training", "personal trainer"
+- For HEALTH category (clinics, dental): Use keywords like "clinic", "healthcare", "medical", "professional", "modern healthcare", "patient care"
+- For restaurants/cafes: Use keywords like "restaurant", "dining", "food service", "customer experience", "modern eatery", "food business"
+- For other categories: Use professional, industry-specific imagery keywords
 `;
 }
 
@@ -1306,7 +1318,8 @@ app.post("/analyze-lead", async (req, res) => {
       instagram_url,
       phone,
       notes,
-      service_offered
+      service_offered,
+      source
     } = req.body;
 
     if (!business_name || typeof business_name !== "string") {
@@ -1367,6 +1380,7 @@ Google Maps URL: ${google_maps_url || "Not provided"}
 Instagram URL: ${instagram_url || "Not provided"}
 Phone: ${phone || "Not provided"}
 Manual Notes: ${notes || "None"}
+Evidence Source: ${source || "manual_research"}
 
 SERVICE OFFERED BY SENDER:
 ${service_offered}
@@ -1411,7 +1425,11 @@ Rules:
 - If instagram_url is provided, Instagram DM may be used.
 - If website/contact email is clearly available in provided data, Email may be used.
 - If no usable contact channel is provided, return "Unknown".
-- audit_pdf_raw_notes must be a strong paragraph that can directly generate a 4-page audit PDF.
+- Evidence-safe wording: If website/social data is missing from available sources, say "not found in available map data" or "not discoverable in search results" instead of claiming "no Instagram" or "zero digital presence".
+- Prefer respectful SaaS wording: "limited discoverability", "missed online booking opportunity", "opportunity to strengthen digital presence".
+- audit_pdf_raw_notes MUST include: (1) Prospect business name and category, (2) Specific problems/opportunities found with evidence source (e.g. "based on website analysis", "from OpenStreetMap data", "from manual notes"), (3) Service being offered, (4) Why they need it, (5) Available contact channel.
+- NEVER use "Our Agency" or "contact@youragency.com" placeholder text in audit_pdf_raw_notes.
+- audit_pdf_raw_notes must be a strong paragraph (3-5 sentences) that can directly generate a 4-page audit PDF with specific business context.
 `;
 
     const geminiText = await callGemini(prompt, 8192, 0.4);
@@ -1449,7 +1467,7 @@ Rules:
 // ─────────────────────────────────────────────
 app.post("/generate-outreach", async (req, res) => {
   try {
-    const { analysis, sender_name, sender_business, sender_service } = req.body;
+    const { analysis, sender_name, sender_business, sender_service, sender_email } = req.body;
 
     if (!analysis || typeof analysis !== "object") {
       return res.status(400).json({ success: false, error: "analysis object is required" });
@@ -1476,6 +1494,7 @@ SENDER:
 Name: ${sender_name}
 Business: ${sender_business}
 Service Offered: ${sender_service}
+Email: ${sender_email || "Not provided"}
 
 Return ONLY valid JSON. No markdown. No explanation.
 
@@ -1512,7 +1531,7 @@ Rules:
       });
     }
 
-    const auditNotes = analysis.audit_pdf_raw_notes;
+    let auditNotes = analysis.audit_pdf_raw_notes;
     if (!auditNotes || typeof auditNotes !== "string") {
       return res.status(400).json({
         success: false,
@@ -1520,7 +1539,16 @@ Rules:
       });
     }
 
-    const brief = await generateBriefFromNotes(auditNotes);
+    // Prepend branding block to audit notes for PDF generation
+    const brandingBlock = `
+PREPARED BY: ${sender_business}
+SENDER NAME: ${sender_name}
+CONTACT EMAIL: ${sender_email || "Available upon request"}
+SERVICE OFFERED: ${sender_service}
+---
+${auditNotes}`;
+
+    const brief = await generateBriefFromNotes(brandingBlock);
     const html = await generateHtmlFromBrief(brief);
     const pdfUrl = await createPdfFromHtml(html, req);
 
@@ -1559,7 +1587,8 @@ app.post("/process-lead", async (req, res) => {
       source,
       service_offered,
       sender_name,
-      sender_business
+      sender_business,
+      sender_email
     } = req.body;
 
     if (!business_name || typeof business_name !== "string") {
@@ -1594,7 +1623,8 @@ app.post("/process-lead", async (req, res) => {
         instagram_url,
         phone,
         notes,
-        service_offered
+        service_offered,
+        source
       },
       { timeout: 180000 }
     );
@@ -1607,7 +1637,8 @@ app.post("/process-lead", async (req, res) => {
         analysis,
         sender_name,
         sender_business,
-        sender_service: service_offered
+        sender_service: service_offered,
+        sender_email
       },
       { timeout: 300000 }
     );
@@ -1666,7 +1697,7 @@ app.post("/process-lead", async (req, res) => {
 // ─────────────────────────────────────────────
 app.post("/process-leads", async (req, res) => {
   try {
-    const { leads, campaign_id, service_offered, sender_name, sender_business } = req.body;
+    const { leads, campaign_id, service_offered, sender_name, sender_business, sender_email } = req.body;
 
     if (!Array.isArray(leads) || leads.length === 0) {
       return res.status(400).json({ success: false, error: "leads must be a non-empty array" });
@@ -1696,7 +1727,8 @@ app.post("/process-leads", async (req, res) => {
             source: lead.source,
             service_offered,
             sender_name,
-            sender_business
+            sender_business,
+            sender_email
           },
           { timeout: 600000 }
         );
@@ -2193,7 +2225,8 @@ async function runCampaignInBackground(campaignId, baseUrl) {
             source: lead.source || "openstreetmap",
             service_offered: campaign.service_offer,
             sender_name: campaign.sender_name,
-            sender_business: campaign.client_business_name
+            sender_business: campaign.client_business_name,
+            sender_email: campaign.sender_email
           },
           { timeout: 700000 }
         );
