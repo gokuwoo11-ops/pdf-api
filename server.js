@@ -1762,116 +1762,318 @@ app.post("/process-leads", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// LEAD FINDER HELPERS
+// LEAD FINDER HELPERS — STRONG OSM VERSION
 // ─────────────────────────────────────────────
-// Normalize messy lead search inputs into internal categories and clean location
+
+const OSM_CONTACT_EMAIL =
+  process.env.OVERPASS_CONTACT_EMAIL ||
+  process.env.CONTACT_EMAIL ||
+  "gokuwoo11@gmail.com";
+
+const OSM_USER_AGENT =
+  process.env.OSM_USER_AGENT ||
+  `LeadFlowStudio/1.0 contact:${OSM_CONTACT_EMAIL}`;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function titleCase(str) {
   return String(str || "")
     .trim()
     .toLowerCase()
     .split(/\s+/)
-    .map(s => s.charAt(0).toUpperCase() + s.slice(1))
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
     .join(" ");
 }
 
-function normalizeLeadSearch({ lead_search_keyword, ideal_target_customer, target_business, location }) {
-  const raw_target = (lead_search_keyword || target_business || ideal_target_customer || "").toString();
+function normalizeLeadSearch({
+  lead_search_keyword,
+  ideal_target_customer,
+  target_business,
+  location
+}) {
+  const raw_target = (
+    lead_search_keyword ||
+    target_business ||
+    ideal_target_customer ||
+    ""
+  ).toString();
+
   const raw_location = (location || "").toString();
 
   const t = raw_target.toLowerCase().trim();
 
-  // canonical mapping table
   const mappings = [
-    { keys: ["gym","gyms","fitness","fitness center","fitness centre","fitness studio","personal trainer","workout","training studio","gym owner","gym owners"], normalized: "gyms" },
-    { keys: ["restaurant","restaurants","cafe","cafes","coffee shop","food business","food shop","eatery","fast food","dining"], normalized: "restaurants" },
-    { keys: ["salon","salons","beauty","beauty salon","hair salon","spa","makeup","barber"], normalized: "salons" },
-    { keys: ["dental","dentist","dentists","dental clinic","orthodontist"], normalized: "dentists" },
-    { keys: ["clinic","clinics","doctor","doctors","medical clinic","health clinic"], normalized: "clinics" }
+    {
+      keys: [
+        "gym",
+        "gyms",
+        "fitness",
+        "fitness center",
+        "fitness centre",
+        "fitness studio",
+        "personal trainer",
+        "workout",
+        "training studio",
+        "gym owner",
+        "gym owners"
+      ],
+      normalized: "gyms"
+    },
+    {
+      keys: [
+        "restaurant",
+        "restaurants",
+        "cafe",
+        "cafes",
+        "coffee shop",
+        "food business",
+        "food shop",
+        "eatery",
+        "fast food",
+        "dining"
+      ],
+      normalized: "restaurants"
+    },
+    {
+      keys: [
+        "salon",
+        "salons",
+        "beauty",
+        "beauty salon",
+        "hair salon",
+        "spa",
+        "makeup",
+        "barber"
+      ],
+      normalized: "salons"
+    },
+    {
+      keys: ["dental", "dentist", "dentists", "dental clinic", "orthodontist"],
+      normalized: "dentists"
+    },
+    {
+      keys: ["clinic", "clinics", "doctor", "doctors", "medical clinic", "health clinic"],
+      normalized: "clinics"
+    },
+    {
+      keys: ["hotel", "hotels", "guest house", "hostel", "lodging"],
+      normalized: "hotels"
+    },
+    {
+      keys: ["school", "schools", "college", "academy", "tuition", "coaching"],
+      normalized: "schools"
+    },
+    {
+      keys: ["pharmacy", "pharmacies", "medical store"],
+      normalized: "pharmacies"
+    },
+    {
+      keys: ["bakery", "bakeries"],
+      normalized: "bakeries"
+    }
   ];
 
   let normalized_target = "";
+
   for (const m of mappings) {
-    if (m.keys.some(k => t.includes(k))) {
+    if (m.keys.some((k) => t.includes(k))) {
       normalized_target = m.normalized;
       break;
     }
   }
 
-  // fallback: if nothing matched, try to extract a single word
   if (!normalized_target) {
     const maybe = t.split(/[,\-\/\\]/)[0].trim();
     normalized_target = maybe || t;
   }
 
-  const normalized_location = raw_location ? titleCase(raw_location) : "";
-
   return {
     raw_target,
     normalized_target,
     raw_location,
-    normalized_location
+    normalized_location: raw_location ? titleCase(raw_location) : ""
   };
 }
 
-function escapeOverpassString(value) {
-  return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+function normalizeLeadIdentity(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function normalizeTarget(value) {
-  return String(value || "").toLowerCase().trim();
+function makeLeadDedupeKey(lead = {}) {
+  const name = normalizeLeadIdentity(lead.business_name || "");
+  const website = normalizeLeadIdentity(lead.website || "");
+  const phone = normalizeLeadIdentity(lead.phone || "");
+  const address = normalizeLeadIdentity(lead.address || "");
+
+  if (website) return `website:${website}`;
+  if (phone) return `phone:${phone}`;
+  return `name-address:${name}:${address}`;
 }
 
-function buildOverpassSelectors(targetBusiness) {
-  const t = normalizeTarget(targetBusiness);
+function buildLeadSearchVariants(target = "") {
+  const t = String(target || "").toLowerCase().trim();
+  const variants = new Set();
 
-  const groups = [
-    { match: ["gym", "gyms", "fitness", "fitness centre", "fitness center", "fitness studio", "personal trainer", "workout", "training studio", "gym owner", "gym owners"], label: "fitness business", selectors: ['["leisure"="fitness_centre"]', '["sport"="fitness"]'] },
-    { match: ["dental", "dentist", "dental clinic", "orthodontist"], label: "dental clinic", selectors: ['["amenity"="dentist"]'] },
-    { match: ["clinic", "clinics", "doctor", "doctors", "health clinic", "medical clinic"], label: "healthcare clinic", selectors: ['["amenity"="clinic"]', '["amenity"="doctors"]'] },
-    { match: ["hospital", "hospitals"], label: "hospital", selectors: ['["amenity"="hospital"]'] },
-    { match: ["restaurant", "restaurants", "food business", "food shop", "eatery", "dining", "fast food", "cafe", "cafes", "coffee shop"], label: "restaurant or cafe", selectors: ['["amenity"="restaurant"]', '["amenity"="cafe"]', '["amenity"="fast_food"]'] },
-    { match: ["salon", "salons", "beauty salon", "hair salon", "spa", "beauty", "makeup", "barber"], label: "salon or beauty business", selectors: ['["shop"="hairdresser"]', '["shop"="beauty"]'] },
-    { match: ["school", "schools", "tuition", "coaching center", "coaching centre", "college", "academy"], label: "education business", selectors: ['["amenity"="school"]', '["amenity"="college"]', '["amenity"="university"]', '["office"="educational_institution"]'] },
-    { match: ["hotel", "hotels", "hostel", "guest house", "lodging"], label: "hospitality business", selectors: ['["tourism"="hotel"]', '["tourism"="guest_house"]', '["tourism"="hostel"]'] },
-    { match: ["pharmacy", "pharmacies", "medical store"], label: "pharmacy", selectors: ['["amenity"="pharmacy"]'] },
-    { match: ["bakery", "bakeries"], label: "bakery", selectors: ['["shop"="bakery"]'] },
-    { match: ["car repair", "mechanic", "automobile service", "auto service", "garage"], label: "auto service business", selectors: ['["shop"="car_repair"]', '["shop"="car"]'] },
-    { match: ["real estate", "property dealer", "estate agent"], label: "real estate business", selectors: ['["office"="estate_agent"]'] },
-    { match: ["lawyer", "law firm", "legal"], label: "legal service business", selectors: ['["office"="lawyer"]'] },
-    { match: ["accountant", "accounting", "ca", "chartered accountant"], label: "accounting service business", selectors: ['["office"="accountant"]'] }
-  ];
+  const add = (items) => items.forEach((item) => variants.add(item));
 
-  const found = groups.find(g => g.match.some(m => t.includes(m)));
-  if (found) return found;
+  if (t) {
+    variants.add(t);
+    variants.add(t.replace(/s$/, ""));
+  }
 
-  const safeRegex = escapeOverpassString(targetBusiness).replace(/\s+/g, ".*");
+  const fallbackMap = {
+    restaurants: ["restaurant", "cafe", "fast_food", "food_court"],
+    restaurant: ["restaurant", "cafe", "fast_food", "food_court"],
+    cafes: ["cafe", "restaurant"],
+    cafe: ["cafe", "restaurant"],
+
+    gyms: ["fitness_centre", "sports_centre", "gym"],
+    gym: ["fitness_centre", "sports_centre", "gym"],
+    fitness: ["fitness_centre", "sports_centre", "gym"],
+
+    salons: ["hairdresser", "beauty", "spa"],
+    salon: ["hairdresser", "beauty", "spa"],
+
+    dentists: ["dentist"],
+    dentist: ["dentist"],
+
+    clinics: ["clinic", "doctors", "hospital"],
+    clinic: ["clinic", "doctors", "hospital"],
+
+    hotels: ["hotel", "guest_house", "hostel"],
+    hotel: ["hotel", "guest_house", "hostel"],
+
+    schools: ["school", "college", "university", "kindergarten"],
+    school: ["school", "college", "university", "kindergarten"],
+
+    pharmacies: ["pharmacy"],
+    pharmacy: ["pharmacy"],
+
+    bakeries: ["bakery"],
+    bakery: ["bakery"]
+  };
+
+  if (fallbackMap[t]) {
+    add(fallbackMap[t]);
+  }
+
+  // Safe generic fallbacks for local business discovery
+  if (variants.size < 3) {
+    add(["restaurant", "cafe", "shop"]);
+  }
+
+  return Array.from(variants).filter(Boolean).slice(0, 10);
+}
+
+function getOverpassTagSelectors(keyword = "") {
+  const k = String(keyword || "").toLowerCase().trim();
+
+  const selectorMap = {
+    restaurant: ['["amenity"="restaurant"]'],
+    cafe: ['["amenity"="cafe"]'],
+    fast_food: ['["amenity"="fast_food"]'],
+    food_court: ['["amenity"="food_court"]'],
+
+    fitness_centre: ['["leisure"="fitness_centre"]'],
+    sports_centre: ['["leisure"="sports_centre"]'],
+    gym: ['["leisure"="fitness_centre"]', '["sport"="fitness"]'],
+
+    hairdresser: ['["shop"="hairdresser"]'],
+    beauty: ['["shop"="beauty"]'],
+    spa: ['["leisure"="spa"]'],
+
+    dentist: ['["amenity"="dentist"]'],
+    clinic: ['["amenity"="clinic"]'],
+    doctors: ['["amenity"="doctors"]'],
+    hospital: ['["amenity"="hospital"]'],
+
+    hotel: ['["tourism"="hotel"]'],
+    guest_house: ['["tourism"="guest_house"]'],
+    hostel: ['["tourism"="hostel"]'],
+
+    school: ['["amenity"="school"]'],
+    college: ['["amenity"="college"]'],
+    university: ['["amenity"="university"]'],
+    kindergarten: ['["amenity"="kindergarten"]'],
+
+    pharmacy: ['["amenity"="pharmacy"]'],
+    bakery: ['["shop"="bakery"]'],
+    shop: ['["shop"]']
+  };
+
+  if (selectorMap[k]) return selectorMap[k];
+
+  const safeRegex = k.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\s+/g, ".*");
+  return [`["name"~"${safeRegex}",i]`];
+}
+
+async function geocodeLocationForLeadSearch(location = "") {
+  const cleanLocation = String(location || "").trim();
+
+  if (!cleanLocation) {
+    throw new Error("Target location is required for lead search.");
+  }
+
+  const response = await axios.get("https://nominatim.openstreetmap.org/search", {
+    params: {
+      q: cleanLocation,
+      format: "json",
+      limit: 1,
+      addressdetails: 1
+    },
+    headers: {
+      "User-Agent": OSM_USER_AGENT,
+      Accept: "application/json"
+    },
+    timeout: 20000
+  });
+
+  const results = response.data;
+
+  if (!Array.isArray(results) || !results.length) {
+    throw new Error(`Could not geocode location: ${cleanLocation}`);
+  }
+
+  const first = results[0];
+
   return {
-    label: targetBusiness,
-    selectors: [`["name"~"${safeRegex}",i]`]
+    lat: Number(first.lat),
+    lon: Number(first.lon),
+    display_name: first.display_name || cleanLocation
   };
 }
 
-function buildOverpassQuery(targetBusiness, location) {
-  const safeLocation = escapeOverpassString(location);
-  const group = buildOverpassSelectors(targetBusiness);
-  const selectorLines = group.selectors
-    .map(selector => `\n  node${selector}(area.searchArea);\n  way${selector}(area.searchArea);\n  relation${selector}(area.searchArea);`)
-    .join("");
+function buildOverpassAroundQuery({ lat, lon, radius, keyword }) {
+  const selectors = getOverpassTagSelectors(keyword);
 
-  return {
-    label: group.label,
-    query: `
+  const selectorLines = selectors
+    .map((selector) => {
+      return `
+  node${selector}(around:${radius},${lat},${lon});
+  way${selector}(around:${radius},${lat},${lon});
+  relation${selector}(around:${radius},${lat},${lon});`;
+    })
+    .join("\n");
+
+  return `
 [out:json][timeout:40];
-area["name"="${safeLocation}"]["boundary"="administrative"]->.searchArea;
 (
 ${selectorLines}
 );
-out center tags;
-`
-  };
+out center tags 100;
+`;
 }
 
-async function requestOverpassWithFallback(overpassQuery, contactEmail) {
+async function requestOverpassWithFallback(overpassQuery) {
   const endpoints = [
     "https://overpass-api.de/api/interpreter",
     "https://lz4.overpass-api.de/api/interpreter",
@@ -1881,7 +2083,7 @@ async function requestOverpassWithFallback(overpassQuery, contactEmail) {
   const headers = {
     "Content-Type": "text/plain",
     Accept: "application/json",
-    "User-Agent": `AI-Lead-Outreach-System/1.0 (contact: ${contactEmail})`,
+    "User-Agent": OSM_USER_AGENT,
     Referer: "https://pdf-api-bw6a.onrender.com/"
   };
 
@@ -1898,19 +2100,150 @@ async function requestOverpassWithFallback(overpassQuery, contactEmail) {
     } catch (error) {
       const status = error?.response?.status;
       const shouldRetry = [429, 500, 502, 503, 504].includes(status);
-      console.error(`OVERPASS REQUEST FAILED (${endpoint}):`, error.message, `status=${status}`);
+
+      console.error(
+        `OVERPASS REQUEST FAILED (${endpoint}):`,
+        error.message,
+        `status=${status}`
+      );
+
+      lastError = error;
 
       if (!shouldRetry) {
         throw error;
       }
 
-      lastError = error;
+      await sleep(1200);
     }
   }
 
-  throw new Error("All Overpass lead discovery endpoints failed");
+  throw lastError || new Error("All Overpass lead discovery endpoints failed");
 }
 
+function mapOverpassElementToLead(element = {}, fallbackLocation = "", label = "local business") {
+  const tags = element.tags || {};
+
+  const lat = element.lat || element.center?.lat || "";
+  const lon = element.lon || element.center?.lon || "";
+
+  const businessName = tags.name || tags["name:en"] || "";
+  if (!businessName) return null;
+
+  const website = tags.website || tags["contact:website"] || "";
+  const phone = tags.phone || tags["contact:phone"] || "";
+  const email = tags.email || tags["contact:email"] || "";
+  const instagram = tags.instagram || tags["contact:instagram"] || "";
+
+  const addressParts = [
+    tags["addr:housenumber"],
+    tags["addr:street"],
+    tags["addr:suburb"],
+    tags["addr:city"],
+    tags["addr:postcode"]
+  ].filter(Boolean);
+
+  const address = addressParts.length ? addressParts.join(", ") : fallbackLocation;
+
+  const googleMapsSearchUrl =
+    lat && lon
+      ? `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`
+      : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+          `${businessName} ${fallbackLocation}`
+        )}`;
+
+  return {
+    business_name: businessName,
+    website,
+    phone,
+    email,
+    instagram_url: instagram,
+    google_maps_url: googleMapsSearchUrl,
+    address,
+    source: "openstreetmap",
+    notes: `Found automatically from OpenStreetMap as a ${label}. ${
+      website
+        ? "Official website available in map data."
+        : "Website not found in available map data."
+    } ${
+      phone
+        ? "Phone number available in map data."
+        : "Phone number not found in available map data."
+    }`
+  };
+}
+
+async function discoverLeadsFromOpenStreetMap({
+  normalizedTarget,
+  rawLocation,
+  requestedCount
+}) {
+  const safeLimit = Math.min(Math.max(Number(requestedCount) || 10, 1), 25);
+
+  const geo = await geocodeLocationForLeadSearch(rawLocation);
+
+  const variants = buildLeadSearchVariants(normalizedTarget);
+  const radiuses = [8000, 15000, 25000];
+
+  const dedupe = new Map();
+  const attempts = [];
+
+  for (const radius of radiuses) {
+    for (const variant of variants) {
+      if (dedupe.size >= safeLimit) break;
+
+      const query = buildOverpassAroundQuery({
+        lat: geo.lat,
+        lon: geo.lon,
+        radius,
+        keyword: variant
+      });
+
+      attempts.push({
+        variant,
+        radius
+      });
+
+      try {
+        const response = await requestOverpassWithFallback(query);
+        const elements = response.data?.elements || [];
+
+        for (const element of elements) {
+          const lead = mapOverpassElementToLead(element, geo.display_name, variant);
+          if (!lead) continue;
+
+          const key = makeLeadDedupeKey(lead);
+          if (!dedupe.has(key)) {
+            dedupe.set(key, lead);
+          }
+
+          if (dedupe.size >= safeLimit) break;
+        }
+      } catch (error) {
+        console.error(
+          `OSM discovery failed for variant='${variant}', radius=${radius}:`,
+          error.message
+        );
+      }
+
+      // Production caution: avoid hammering free OSM infrastructure.
+      await sleep(900);
+    }
+
+    if (dedupe.size >= safeLimit) break;
+  }
+
+  const leads = Array.from(dedupe.values()).slice(0, safeLimit);
+
+  return {
+    leads,
+    requested_count: safeLimit,
+    found_count: leads.length,
+    shortfall: Math.max(safeLimit - leads.length, 0),
+    search_location: geo.display_name,
+    search_variants: variants,
+    search_attempts: attempts
+  };
+}
 // ─────────────────────────────────────────────
 // ROUTE 9 — FIND LEADS + OPTIONAL SUPABASE SAVE
 // ─────────────────────────────────────────────
@@ -1922,74 +2255,73 @@ app.post("/find-leads", async (req, res) => {
       lead_search_keyword,
       ideal_target_customer,
       location,
+      target_location,
       max_results = 10,
+      leads_requested,
+      requested_count,
       save_to_database = true
     } = req.body;
 
-    const rawTargetProvided = (lead_search_keyword || target_business || ideal_target_customer || "").toString();
-    const rawLocationProvided = (location || "").toString();
+    const rawTargetProvided = (
+      lead_search_keyword ||
+      target_business ||
+      ideal_target_customer ||
+      ""
+    ).toString();
+
+    const rawLocationProvided = (
+      location ||
+      target_location ||
+      ""
+    ).toString();
 
     if (!rawTargetProvided) {
-      return res.status(400).json({ success: false, error: "target_business or lead_search_keyword is required" });
+      return res.status(400).json({
+        success: false,
+        error: "target_business or lead_search_keyword is required"
+      });
     }
+
     if (!rawLocationProvided) {
-      return res.status(400).json({ success: false, error: "location is required" });
+      return res.status(400).json({
+        success: false,
+        error: "location or target_location is required"
+      });
     }
 
-    const safeLimit = Math.min(Math.max(Number(max_results) || 10, 1), 25);
+    const finalRequestedCount =
+      max_results ||
+      leads_requested ||
+      requested_count ||
+      10;
 
-    const normalized = normalizeLeadSearch({ lead_search_keyword, ideal_target_customer, target_business, location });
+    const normalized = normalizeLeadSearch({
+      lead_search_keyword,
+      ideal_target_customer,
+      target_business,
+      location: rawLocationProvided
+    });
+
     const { normalized_target, normalized_location } = normalized;
 
-    const { label, query: overpassQuery } = buildOverpassQuery(normalized_target, normalized_location || location);
-    const contactEmail = process.env.OVERPASS_CONTACT_EMAIL || process.env.CONTACT_EMAIL || "contact@example.com";
+    console.log("🔎 FIND LEADS START");
+    console.log("raw target:", rawTargetProvided);
+    console.log("normalized target:", normalized_target);
+    console.log("raw location:", rawLocationProvided);
+    console.log("normalized location:", normalized_location);
+    console.log("requested count:", finalRequestedCount);
 
-    console.log(`🔎 FIND LEADS: using normalized target='${normalized_target}', normalized location='${normalized_location}'`);
+    const discovery = await discoverLeadsFromOpenStreetMap({
+      normalizedTarget: normalized_target,
+      rawLocation: normalized_location || rawLocationProvided,
+      requestedCount: finalRequestedCount
+    });
 
-    const response = await requestOverpassWithFallback(overpassQuery, contactEmail);
-
-    const elements = response.data?.elements || [];
-    const seen = new Set();
-
-    const leads = elements
-      .map((el) => {
-        const tags = el.tags || {};
-        const lat = el.lat || el.center?.lat || "";
-        const lon = el.lon || el.center?.lon || "";
-        const businessName = tags.name || tags["name:en"] || "";
-        if (!businessName) return null;
-
-        const website = tags.website || tags["contact:website"] || "";
-        const phone = tags.phone || tags["contact:phone"] || "";
-        const instagram = tags.instagram || tags["contact:instagram"] || "";
-        const email = tags.email || tags["contact:email"] || "";
-        const addressParts = [tags["addr:housenumber"], tags["addr:street"], tags["addr:suburb"], tags["addr:city"]].filter(Boolean);
-        const address = addressParts.join(", ");
-        const googleMapsSearchUrl = lat && lon
-          ? `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`
-          : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${businessName} ${location}`)}`;
-
-        const key = `${businessName.toLowerCase()}|${website}|${phone}|${lat}|${lon}`;
-        if (seen.has(key)) return null;
-        seen.add(key);
-
-        return {
-          business_name: businessName,
-          website,
-          phone,
-          email,
-          instagram_url: instagram,
-          google_maps_url: googleMapsSearchUrl,
-          address,
-          source: "openstreetmap",
-          notes: `Found automatically from OpenStreetMap as a ${label} in ${location}. ${website ? "Official website available." : "No website found in map data."} ${phone ? "Phone number available." : "Phone number not found in map data."}`
-        };
-      })
-      .filter(Boolean)
-      .slice(0, safeLimit);
+    const leads = discovery.leads;
 
     let savedLeads = [];
     let insertError = null;
+
     if (save_to_database && campaign_id) {
       try {
         savedLeads = await insertLeadsForCampaign(campaign_id, leads);
@@ -2001,20 +2333,32 @@ app.post("/find-leads", async (req, res) => {
 
     const search_used = {
       raw_target_business: rawTargetProvided,
-      normalized_target: normalized_target,
-      normalized_category: label,
+      normalized_target,
       raw_location: rawLocationProvided,
-      normalized_location: normalized_location
+      normalized_location,
+      search_location: discovery.search_location,
+      search_variants: discovery.search_variants
     };
 
     return res.json({
       success: true,
       search_used,
-      found_count: leads.length,
+
+      requested_count: discovery.requested_count,
+      found_count: discovery.found_count,
+      shortfall: discovery.shortfall,
+
+      warning:
+        discovery.shortfall > 0
+          ? `Only found ${discovery.found_count} out of ${discovery.requested_count}. OpenStreetMap data may be limited for this keyword/location.`
+          : null,
+
       leads,
+
       database: {
         saved: Boolean(save_to_database && campaign_id && !insertError),
         campaign_id: campaign_id || null,
+        saved_count: savedLeads.length,
         saved_leads: savedLeads,
         insert_error: insertError
       }
