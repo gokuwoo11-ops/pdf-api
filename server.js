@@ -2348,6 +2348,88 @@ app.get("/campaigns/:id/results", async (req, res) => {
     });
   }
 });
+// ─────────────────────────────────────────────
+// ROUTE 12 — RETRY ONE FAILED LEAD
+// POST /leads/:id/retry
+// ─────────────────────────────────────────────
+app.post("/leads/:id/retry", async (req, res) => {
+  try {
+    const leadId = req.params.id;
+    const lead = await findLeadById(leadId);
+
+    if (!lead) {
+      return res.status(404).json({
+        success: false,
+        error: "Lead not found"
+      });
+    }
+
+    const campaign = await findCampaignById(lead.campaign_id);
+
+    if (!campaign) {
+      return res.status(404).json({
+        success: false,
+        error: "Campaign not found for this lead"
+      });
+    }
+
+    await updateRows(
+      "leads",
+      `?id=eq.${encodeURIComponent(leadId)}`,
+      {
+        processing_status: "processing",
+        updated_at: new Date().toISOString()
+      }
+    );
+
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+
+    const processRes = await axios.post(
+      `${baseUrl}/process-lead`,
+      {
+        lead_id: lead.id,
+        campaign_id: campaign.id,
+        business_name: lead.business_name,
+        website: lead.website || "",
+        google_maps_url: lead.google_maps_url || "",
+        instagram_url: lead.instagram_url || "",
+        phone: lead.phone || "",
+        email: lead.email || "",
+        address: lead.address || "",
+        notes: lead.notes || "",
+        source: lead.source || "openstreetmap",
+        service_offered: campaign.service_offer,
+        sender_name: campaign.sender_name,
+        sender_business: campaign.client_business_name,
+        sender_email: campaign.sender_email || ""
+      },
+      { timeout: 700000 }
+    );
+
+    return res.json({
+      success: true,
+      message: "Lead retried successfully",
+      result: processRes.data
+    });
+
+  } catch (error) {
+    console.error("RETRY LEAD ERROR:", error.response?.data?.error || error.message);
+
+    await updateRows(
+      "leads",
+      `?id=eq.${encodeURIComponent(req.params.id)}`,
+      {
+        processing_status: "failed",
+        updated_at: new Date().toISOString()
+      }
+    );
+
+    return res.status(500).json({
+      success: false,
+      error: error.response?.data?.error || error.message
+    });
+  }
+});
 
 
 // ─────────────────────────────────────────────
