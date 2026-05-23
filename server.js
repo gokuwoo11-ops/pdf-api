@@ -2496,49 +2496,73 @@ async function runCampaignInBackground(campaignId, baseUrl) {
       console.log("normalized location:", normalizedPreview.normalized_location);
 
       let findRes;
-      try {
-        findRes = await axios.post(
-          `${baseUrl}/find-leads`,
-          {
-            campaign_id: campaignId,
-            lead_search_keyword: campaign.lead_search_keyword,
-            ideal_target_customer: campaign.ideal_target_customer,
-            target_business: campaign.lead_search_keyword,
-            location: campaign.target_location,
-            max_results: campaign.leads_requested || 20,
-            save_to_database: true
-          },
-          { timeout: 30000 }
-        );
-      } catch (findErr) {
-        console.error("❌ Lead discovery request failed:", findErr.response?.data?.error || findErr.message);
-        findRes = findErr.response?.data ? { data: findErr.response.data } : null;
-      }
+try {
+  findRes = await axios.post(
+    `${baseUrl}/find-leads`,
+    {
+      campaign_id: campaignId,
+      lead_search_keyword: campaign.lead_search_keyword,
+      ideal_target_customer: campaign.ideal_target_customer,
+      target_business: campaign.lead_search_keyword,
+      location: campaign.target_location,
+      max_results: campaign.leads_requested || 20,
+      save_to_database: true
+    },
+    { timeout: 360000 }
+  );
+} catch (findErr) {
+  console.error(
+    "❌ Lead discovery request failed:",
+    findErr.response?.data?.error || findErr.message
+  );
 
-      const rawFound = findRes?.data?.found_count || (findRes?.data?.leads || []).length || 0;
-      const savedCount = (findRes?.data?.database?.saved_leads || []).length || 0;
-      const insertError = findRes?.data?.database?.insert_error || null;
+  findRes = findErr.response?.data ? { data: findErr.response.data } : null;
+}
 
-      console.log(`🔎 Discovery results — raw found: ${rawFound}, saved: ${savedCount}`);
-      if (insertError) console.error("❌ Supabase insert error:", insertError);
+const rawFound = findRes?.data?.found_count || (findRes?.data?.leads || []).length || 0;
+let savedCount = (findRes?.data?.database?.saved_leads || []).length || 0;
+const insertError = findRes?.data?.database?.insert_error || null;
 
-      leads = findRes?.data?.database?.saved_leads || [];
+console.log(`🔎 Discovery results — raw found: ${rawFound}, saved: ${savedCount}`);
+if (insertError) console.error("❌ Supabase insert error:", insertError);
+
+leads = findRes?.data?.database?.saved_leads || [];
+
+// Recovery: if the HTTP request timed out but /find-leads kept saving leads,
+// wait and re-check Supabase before ending the campaign.
+if (!leads.length) {
+  console.log("⏳ No leads returned from discovery. Checking Supabase for saved leads before giving up...");
+
+  for (let attempt = 1; attempt <= 18; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 10000));
+
+    leads = await getCampaignLeads(campaignId, "new");
+
+    console.log(
+      `⏳ Saved-lead recovery check ${attempt}/18: found ${leads.length} new leads`
+    );
+
+    if (leads.length) break;
+  }
+}
+
+if (leads.length) {
+  console.log(`✅ Ready to process ${leads.length} discovered leads.`);
+}
+   if (!leads.length) {
+  await updateRows(
+    "campaigns",
+    `?id=eq.${encodeURIComponent(campaignId)}`,
+    {
+      status: "failed",
+      updated_at: new Date().toISOString()
     }
+  );
 
-    if (!leads.length) {
-      await updateRows(
-        "campaigns",
-        `?id=eq.${encodeURIComponent(campaignId)}`,
-        {
-          status: "completed",
-          updated_at: new Date().toISOString()
-        }
-      );
-
-      console.log(`✅ Campaign completed with no leads to process: ${campaignId}`);
-      return;
-    }
-
+  console.log(`❌ Campaign failed: no leads were discovered or saved for ${campaignId}`);
+  return;
+}
+  }
     // Step 3: process each saved lead one by one and persist outputs.
     for (const lead of leads) {
       try {
