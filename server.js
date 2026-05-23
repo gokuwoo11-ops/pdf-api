@@ -24,7 +24,30 @@ app.use((err, req, res, next) => {
 });
 
 app.use("/files", express.static(path.join(__dirname, "public")));
+// ─────────────────────────────────────────────
+// INTERNAL API PROTECTION
+// Protect expensive backend routes from public abuse.
+// Frontend API routes must send x-internal-api-secret.
+// ─────────────────────────────────────────────
+function requireInternalSecret(req, res, next) {
+  const expectedSecret = process.env.INTERNAL_API_SECRET;
 
+  if (!expectedSecret) {
+    console.warn("⚠️ INTERNAL_API_SECRET is not set. Backend route is unprotected.");
+    return next();
+  }
+
+  const providedSecret = req.headers["x-internal-api-secret"];
+
+  if (providedSecret !== expectedSecret) {
+    return res.status(401).json({
+      success: false,
+      error: "Unauthorized backend request"
+    });
+  }
+
+  return next();
+}
 // ─────────────────────────────────────────────
 // SUPABASE HELPERS — REAL SAAS STORAGE LAYER
 // ─────────────────────────────────────────────
