@@ -760,6 +760,36 @@ async function autoFitPageContent(page) {
     });
   });
 }
+async function launchPuppeteerWithRetry(options, maxAttempts = 3) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      console.log(`🚀 Launching Puppeteer attempt ${attempt}/${maxAttempts}...`);
+      return await puppeteer.launch(options);
+    } catch (error) {
+      lastError = error;
+
+      const isTemporarySpawnIssue =
+        error?.code === "ETXTBSY" ||
+        error?.message?.includes("ETXTBSY") ||
+        error?.message?.includes("Text file busy");
+
+      if (!isTemporarySpawnIssue || attempt === maxAttempts) {
+        throw error;
+      }
+
+      const waitMs = attempt * 3000;
+      console.log(
+        `⏳ Chromium was busy. Retrying Puppeteer launch in ${waitMs / 1000}s...`
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+
+  throw lastError || new Error("Unable to launch Puppeteer");
+}
 
 // ─────────────────────────────────────────────
 // PDF GENERATOR HELPER
@@ -773,7 +803,7 @@ async function createPdfFromHtml(html, req) {
 
     console.log("🚀 Launching Puppeteer...");
 
-    browser = await puppeteer.launch({
+    browser = await launchPuppeteerWithRetry({
       args: [
         ...chromium.args,
         "--no-sandbox",
