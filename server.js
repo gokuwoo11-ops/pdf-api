@@ -2388,7 +2388,7 @@ async function discoverLeadsFromOpenStreetMap({
 // ─────────────────────────────────────────────
 // ROUTE 9 — FIND LEADS + OPTIONAL SUPABASE SAVE
 // ─────────────────────────────────────────────
-app.post("/find-leads", async (req, res) => {
+app.post("/find-leads", requireInternalSecret, async (req, res) => {
   try {
     const {
       campaign_id,
