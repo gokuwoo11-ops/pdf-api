@@ -2130,10 +2130,8 @@ out center tags 100;
 
 async function requestOverpassWithFallback(overpassQuery) {
   const endpoints = [
-    "https://overpass-api.de/api/interpreter",
-    "https://lz4.overpass-api.de/api/interpreter",
-    "https://z.overpass-api.de/api/interpreter"
-  ];
+  "https://overpass-api.de/api/interpreter"
+];
 
   const headers = {
     "Content-Type": "text/plain",
@@ -2144,7 +2142,7 @@ async function requestOverpassWithFallback(overpassQuery) {
 
   let lastError = null;
 
-  for (let round = 1; round <= 3; round++) {
+  for (let round = 1; round <= 1; round++) {
     for (const endpoint of endpoints) {
       try {
         console.log(`🌍 Overpass request round ${round}: ${endpoint}`);
@@ -2292,7 +2290,7 @@ async function discoverLeadsFromOpenStreetMap({
   // This reduces OpenStreetMap rate-limit problems.
   const radius = 15000;
 
-  for (const variant of variants.slice(0, 2)) {
+  for (const variant of variants.slice(0, 1)) {
     if (dedupe.size >= safeLimit) break;
 
     const query = buildOverpassAroundQuery({
@@ -2360,7 +2358,7 @@ async function discoverLeadsFromOpenStreetMap({
     found_count: leads.length,
     shortfall: Math.max(safeLimit - leads.length, 0),
     search_location: geo.display_name,
-    search_variants: variants.slice(0, 2),
+    search_variants: variants.slice(0, 1),
     attempts
   };
 }
@@ -2698,7 +2696,7 @@ if (leads.length) {
 if (!leads.length) {
   console.log("⏳ No leads returned from discovery. Checking Supabase for saved leads before giving up...");
 
-  for (let attempt = 1; attempt <= 18; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 10000));
 
     leads = await getCampaignLeads(campaignId, "new");
