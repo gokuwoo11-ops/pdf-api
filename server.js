@@ -2832,49 +2832,62 @@ app.post("/leads/:id/retry", async (req, res) => {
 
     const baseUrl = `${req.protocol}://${req.get("host")}`;
 
-    const processRes = await axios.post(
-      `${baseUrl}/process-lead`,
-      {
-        lead_id: lead.id,
-        campaign_id: campaign.id,
-        business_name: lead.business_name,
-        website: lead.website || "",
-        google_maps_url: lead.google_maps_url || "",
-        instagram_url: lead.instagram_url || "",
-        phone: lead.phone || "",
-        email: lead.email || "",
-        address: lead.address || "",
-        notes: lead.notes || "",
-        source: lead.source || "openstreetmap",
-        service_offered: campaign.service_offer,
-        sender_name: campaign.sender_name,
-        sender_business: campaign.client_business_name,
-        sender_email: campaign.sender_email || ""
-      },
-      { timeout: 700000 }
-    );
+    setImmediate(async () => {
+      try {
+        console.log(`🔁 Retry started in background: ${lead.business_name}`);
+
+        await axios.post(
+          `${baseUrl}/process-lead`,
+          {
+            lead_id: lead.id,
+            campaign_id: campaign.id,
+            business_name: lead.business_name,
+            website: lead.website || "",
+            google_maps_url: lead.google_maps_url || "",
+            instagram_url: lead.instagram_url || "",
+            phone: lead.phone || "",
+            email: lead.email || "",
+            address: lead.address || "",
+            notes: lead.notes || "",
+            source: lead.source || "openstreetmap",
+            service_offered: campaign.service_offer,
+            sender_name: campaign.sender_name,
+            sender_business: campaign.client_business_name,
+            sender_email: campaign.sender_email
+          },
+          { timeout: 600000 }
+        );
+
+        console.log(`✅ Retry completed: ${lead.business_name}`);
+      } catch (retryError) {
+        console.error(
+          "RETRY BACKGROUND ERROR:",
+          retryError.response?.data?.error || retryError.message
+        );
+
+        await updateRows(
+          "leads",
+          `?id=eq.${encodeURIComponent(leadId)}`,
+          {
+            processing_status: "failed",
+            updated_at: new Date().toISOString()
+          }
+        );
+      }
+    });
 
     return res.json({
       success: true,
-      message: "Lead retried successfully",
-      result: processRes.data
+      message: "Retry started",
+      lead_id: leadId,
+      status: "processing"
     });
-
   } catch (error) {
-    console.error("RETRY LEAD ERROR:", error.response?.data?.error || error.message);
-
-    await updateRows(
-      "leads",
-      `?id=eq.${encodeURIComponent(req.params.id)}`,
-      {
-        processing_status: "failed",
-        updated_at: new Date().toISOString()
-      }
-    );
+    console.error("RETRY LEAD ERROR:", error.message);
 
     return res.status(500).json({
       success: false,
-      error: error.response?.data?.error || error.message
+      error: error.message
     });
   }
 });
