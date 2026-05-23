@@ -477,7 +477,7 @@ app.post("/campaigns", async (req, res) => {
       target_location,
       outreach_tone,
       lead_search_keyword,
-      leads_requested: Math.min(Math.max(Number(leads_requested) || 10, 1), 100),
+      leads_requested: Math.min(Math.max(Number(leads_requested) || 10, 1), 25),
       status
     });
 
@@ -613,7 +613,7 @@ async function fetchImageAsBase64(query) {
 
     const img = await axios.get(url, {
       responseType: "arraybuffer",
-      timeout: 12000
+      timeout: 30000
     });
 
     const b64 = Buffer.from(img.data).toString("base64");
@@ -2508,7 +2508,7 @@ async function runCampaignInBackground(campaignId, baseUrl) {
             max_results: campaign.leads_requested || 20,
             save_to_database: true
           },
-          { timeout: 120000 }
+          { timeout: 30000 }
         );
       } catch (findErr) {
         console.error("❌ Lead discovery request failed:", findErr.response?.data?.error || findErr.message);
