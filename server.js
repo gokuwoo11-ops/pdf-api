@@ -2072,6 +2072,31 @@ ${selectorLines}
 out center tags 100;
 `;
 }
+function buildCombinedOverpassAroundQuery({ lat, lon, radius, keywords }) {
+  const selectorSet = new Set();
+
+  keywords.forEach((keyword) => {
+    const selectors = getOverpassTagSelectors(keyword);
+    selectors.forEach((selector) => selectorSet.add(selector));
+  });
+
+  const selectorLines = Array.from(selectorSet)
+    .map((selector) => {
+      return `
+  node${selector}(around:${radius},${lat},${lon});
+  way${selector}(around:${radius},${lat},${lon});
+  relation${selector}(around:${radius},${lat},${lon});`;
+    })
+    .join("\n");
+
+  return `
+[out:json][timeout:60];
+(
+${selectorLines}
+);
+out center tags 100;
+`;
+}
 
 async function requestOverpassWithFallback(overpassQuery) {
   const endpoints = [
@@ -2089,31 +2114,41 @@ async function requestOverpassWithFallback(overpassQuery) {
 
   let lastError = null;
 
-  for (const endpoint of endpoints) {
-    try {
-      const response = await axios.post(endpoint, overpassQuery, {
-        headers,
-        timeout: 90000
-      });
+  for (let round = 1; round <= 3; round++) {
+    for (const endpoint of endpoints) {
+      try {
+        console.log(`🌍 Overpass request round ${round}: ${endpoint}`);
 
-      return response;
-    } catch (error) {
-      const status = error?.response?.status;
-      const shouldRetry = [429, 500, 502, 503, 504].includes(status);
+        const response = await axios.post(endpoint, overpassQuery, {
+          headers,
+          timeout: 120000
+        });
 
-      console.error(
-        `OVERPASS REQUEST FAILED (${endpoint}):`,
-        error.message,
-        `status=${status}`
-      );
+        return response;
+      } catch (error) {
+        const status = error?.response?.status;
+        const shouldRetry = [429, 500, 502, 503, 504].includes(status);
 
-      lastError = error;
+        console.error(
+          `OVERPASS REQUEST FAILED (${endpoint}):`,
+          error.message,
+          `status=${status}`
+        );
 
-      if (!shouldRetry) {
-        throw error;
+        lastError = error;
+
+        if (!shouldRetry) {
+          throw error;
+        }
+
+        if (status === 429) {
+          const waitMs = round * 15000;
+          console.log(`⏳ Overpass rate limited. Waiting ${waitMs / 1000}s before retry...`);
+          await sleep(waitMs);
+        } else {
+          await sleep(3000 * round);
+        }
       }
-
-      await sleep(1200);
     }
   }
 
@@ -2289,11 +2324,13 @@ app.post("/find-leads", async (req, res) => {
       });
     }
 
-    const finalRequestedCount =
-      max_results ||
-      leads_requested ||
-      requested_count ||
-      10;
+    const finalRequestedCount = Math.min(
+      Math.max(
+        Number(max_results || leads_requested || requested_count || 10) || 10,
+        1
+      ),
+      25
+    );
 
     const normalized = normalizeLeadSearch({
       lead_search_keyword,
@@ -2317,7 +2354,7 @@ app.post("/find-leads", async (req, res) => {
       requestedCount: finalRequestedCount
     });
 
-    const leads = discovery.leads;
+    const leads = Array.isArray(discovery.leads) ? discovery.leads : [];
 
     let savedLeads = [];
     let insertError = null;
@@ -2336,21 +2373,23 @@ app.post("/find-leads", async (req, res) => {
       normalized_target,
       raw_location: rawLocationProvided,
       normalized_location,
-      search_location: discovery.search_location,
-      search_variants: discovery.search_variants
+      search_location: discovery.search_location || null,
+      search_variants: discovery.search_variants || []
     };
 
     return res.json({
       success: true,
       search_used,
 
-      requested_count: discovery.requested_count,
-      found_count: discovery.found_count,
-      shortfall: discovery.shortfall,
+      requested_count: discovery.requested_count || finalRequestedCount,
+      found_count: discovery.found_count ?? leads.length,
+      shortfall:
+        discovery.shortfall ??
+        Math.max(finalRequestedCount - leads.length, 0),
 
       warning:
-        discovery.shortfall > 0
-          ? `Only found ${discovery.found_count} out of ${discovery.requested_count}. OpenStreetMap data may be limited for this keyword/location.`
+        (discovery.shortfall ?? Math.max(finalRequestedCount - leads.length, 0)) > 0
+          ? `Only found ${leads.length} out of ${finalRequestedCount}. OpenStreetMap data may be limited for this keyword/location.`
           : null,
 
       leads,
@@ -2363,13 +2402,18 @@ app.post("/find-leads", async (req, res) => {
         insert_error: insertError
       }
     });
-
   } catch (error) {
     console.error("FIND LEADS ERROR:", error.message);
 
-    return res.status(500).json({
+    const statusCode = error.statusCode || error.response?.status || 500;
+    const isRateLimited = statusCode === 429;
+
+    return res.status(isRateLimited ? 503 : 500).json({
       success: false,
-      error: error.message
+      retryable: isRateLimited,
+      error: isRateLimited
+        ? "Lead search is temporarily rate-limited by public map data. Please try again in a few minutes."
+        : error.message
     });
   }
 });
