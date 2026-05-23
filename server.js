@@ -2246,55 +2246,110 @@ async function discoverLeadsFromOpenStreetMap({
 
   const geo = await geocodeLocationForLeadSearch(rawLocation);
 
-  const variants = buildLeadSearchVariants(normalizedTarget);
-  const radiuses = [8000, 15000, 25000];
+  const target = String(normalizedTarget || "").toLowerCase().trim();
+
+  const stableVariantMap = {
+    restaurants: ["restaurant", "cafe"],
+    restaurant: ["restaurant", "cafe"],
+    cafes: ["cafe", "restaurant"],
+    cafe: ["cafe", "restaurant"],
+
+    gyms: ["fitness_centre", "gym"],
+    gym: ["fitness_centre", "gym"],
+    fitness: ["fitness_centre", "gym"],
+
+    salons: ["hairdresser", "beauty"],
+    salon: ["hairdresser", "beauty"],
+    beauty: ["beauty", "hairdresser"],
+
+    dentists: ["dentist"],
+    dentist: ["dentist"],
+
+    clinics: ["clinic", "doctors"],
+    clinic: ["clinic", "doctors"],
+
+    hotels: ["hotel", "guest_house"],
+    hotel: ["hotel", "guest_house"],
+
+    schools: ["school", "college"],
+    school: ["school", "college"],
+
+    pharmacies: ["pharmacy"],
+    pharmacy: ["pharmacy"],
+
+    bakeries: ["bakery"],
+    bakery: ["bakery"]
+  };
+
+  const variants =
+    stableVariantMap[target] ||
+    buildLeadSearchVariants(target).slice(0, 2);
 
   const dedupe = new Map();
   const attempts = [];
 
-  for (const radius of radiuses) {
-    for (const variant of variants) {
-      if (dedupe.size >= safeLimit) break;
+  // One medium radius is safer than 8km + 15km + 25km loops.
+  // This reduces OpenStreetMap rate-limit problems.
+  const radius = 15000;
 
-      const query = buildOverpassAroundQuery({
-        lat: geo.lat,
-        lon: geo.lon,
-        radius,
-        keyword: variant
-      });
+  for (const variant of variants.slice(0, 2)) {
+    if (dedupe.size >= safeLimit) break;
 
-      attempts.push({
-        variant,
-        radius
-      });
+    const query = buildOverpassAroundQuery({
+      lat: geo.lat,
+      lon: geo.lon,
+      radius,
+      keyword: variant
+    });
 
-      try {
-        const response = await requestOverpassWithFallback(query);
-        const elements = response.data?.elements || [];
+    attempts.push({
+      variant,
+      radius
+    });
 
-        for (const element of elements) {
-          const lead = mapOverpassElementToLead(element, geo.display_name, variant);
-          if (!lead) continue;
+    try {
+      console.log(
+        `🔎 Stable OSM search: variant="${variant}", radius=${radius}, location="${geo.display_name}"`
+      );
 
-          const key = makeLeadDedupeKey(lead);
-          if (!dedupe.has(key)) {
-            dedupe.set(key, lead);
-          }
+      const response = await requestOverpassWithFallback(query);
+      const elements = response.data?.elements || [];
 
-          if (dedupe.size >= safeLimit) break;
-        }
-      } catch (error) {
-        console.error(
-          `OSM discovery failed for variant='${variant}', radius=${radius}:`,
-          error.message
+      console.log(
+        `✅ Stable OSM response: variant="${variant}", elements=${elements.length}`
+      );
+
+      for (const element of elements) {
+        const lead = mapOverpassElementToLead(
+          element,
+          geo.display_name,
+          variant
         );
-      }
 
-      // Production caution: avoid hammering free OSM infrastructure.
-      await sleep(900);
+        if (!lead) continue;
+
+        const key = makeLeadDedupeKey(lead);
+
+        if (!dedupe.has(key)) {
+          dedupe.set(key, lead);
+        }
+
+        if (dedupe.size >= safeLimit) break;
+      }
+    } catch (error) {
+      console.error(
+        `OSM stable discovery failed for variant="${variant}":`,
+        error.message
+      );
+
+      // Stop if rate-limited. Do not keep hammering Overpass.
+      if (error?.response?.status === 429 || error?.statusCode === 429) {
+        break;
+      }
     }
 
-    if (dedupe.size >= safeLimit) break;
+    // Small pause between max 2 attempts.
+    await sleep(1500);
   }
 
   const leads = Array.from(dedupe.values()).slice(0, safeLimit);
@@ -2305,8 +2360,8 @@ async function discoverLeadsFromOpenStreetMap({
     found_count: leads.length,
     shortfall: Math.max(safeLimit - leads.length, 0),
     search_location: geo.display_name,
-    search_variants: variants,
-    search_attempts: attempts
+    search_variants: variants.slice(0, 2),
+    attempts
   };
 }
 // ─────────────────────────────────────────────
