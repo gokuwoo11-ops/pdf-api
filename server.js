@@ -903,7 +903,7 @@ async function createPdfFromHtml(html, req) {
 // ─────────────────────────────────────────────
 // ROUTE 1 — GENERATE PDF FROM HTML DIRECTLY
 // ─────────────────────────────────────────────
-app.post("/generate-pdf", async (req, res) => {
+app.post("/generate-pdf", requireInternalSecret, async (req, res) => {
   try {
     console.log("\n=== PDF REQUEST ===");
 
@@ -1058,7 +1058,7 @@ async function generateBriefFromNotes(rawNotes) {
 // ─────────────────────────────────────────────
 // ROUTE 2 — GENERATE RESEARCH BRIEF
 // ─────────────────────────────────────────────
-app.post("/generate-brief", async (req, res) => {
+app.post("/generate-brief", requireInternalSecret, async (req, res) => {
   try {
     const { raw_notes } = req.body;
 
@@ -1272,7 +1272,7 @@ async function generateHtmlFromBrief(brief) {
 // ─────────────────────────────────────────────
 // ROUTE 3 — GENERATE HTML FROM BRIEF
 // ─────────────────────────────────────────────
-app.post("/generate-html", async (req, res) => {
+app.post("/generate-html", requireInternalSecret, async (req, res) => {
   try {
     const { brief } = req.body;
 
@@ -1305,7 +1305,7 @@ app.post("/generate-html", async (req, res) => {
 // ─────────────────────────────────────────────
 // ROUTE 4 — FULL PDF PIPELINE
 // ─────────────────────────────────────────────
-app.post("/generate-report-pdf", async (req, res) => {
+app.post("/generate-report-pdf", requireInternalSecret, async (req, res) => {
   try {
     const { raw_notes } = req.body;
 
@@ -1362,7 +1362,7 @@ function extractReadableTextFromHtml(html) {
 // ─────────────────────────────────────────────
 // ROUTE 5 — ANALYZE A LEAD
 // ─────────────────────────────────────────────
-app.post("/analyze-lead", async (req, res) => {
+app.post("/analyze-lead", requireInternalSecret, async (req, res) => {
   try {
     const {
       business_name,
@@ -1518,7 +1518,7 @@ Rules:
 // ─────────────────────────────────────────────
 // ROUTE 6 — GENERATE OUTREACH + AUDIT PDF
 // ─────────────────────────────────────────────
-app.post("/generate-outreach", async (req, res) => {
+app.post("/generate-outreach", requireInternalSecret, async (req, res) => {
   try {
     const { analysis, sender_name, sender_business, sender_service, sender_email } = req.body;
 
@@ -1624,7 +1624,7 @@ ${auditNotes}`;
 // ─────────────────────────────────────────────
 // ROUTE 7 — PROCESS ONE LEAD FULLY + SAVE TO SUPABASE
 // ─────────────────────────────────────────────
-app.post("/process-lead", async (req, res) => {
+app.post("/process-lead", requireInternalSecret, async (req, res) => {
   try {
     const {
       lead_id,
@@ -1748,7 +1748,7 @@ app.post("/process-lead", async (req, res) => {
 // ─────────────────────────────────────────────
 // ROUTE 8 — PROCESS MULTIPLE LEADS
 // ─────────────────────────────────────────────
-app.post("/process-leads", async (req, res) => {
+app.post("/process-leads", requireInternalSecret, async (req, res) => {
   try {
     const { leads, campaign_id, service_offered, sender_name, sender_business, sender_email } = req.body;
 
@@ -2834,7 +2834,7 @@ if (leads.length) {
 // ROUTE 10 — RUN A FULL CAMPAIGN AUTOMATICALLY
 // POST /campaigns/:id/run
 // ─────────────────────────────────────────────
-app.post("/campaigns/:id/run", async (req, res) => {
+app.post("/campaigns/:id/run", requireInternalSecret, async (req, res) => {
   try {
     const campaignId = req.params.id;
     const campaign = await findCampaignById(campaignId);
@@ -2906,7 +2906,7 @@ app.get("/campaigns/:id/results", async (req, res) => {
 // ROUTE 12 — RETRY ONE FAILED LEAD
 // POST /leads/:id/retry
 // ─────────────────────────────────────────────
-app.post("/leads/:id/retry", async (req, res) => {
+app.post("/leads/:id/retry", requireInternalSecret, async (req, res) => {
   try {
     const leadId = req.params.id;
     const lead = await findLeadById(leadId);
